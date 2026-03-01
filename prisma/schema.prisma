@@ -1,0 +1,53 @@
+// Prisma Schema for Atoms Demo
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+// 项目表
+model Project {
+  id          String   @id @default(cuid())
+  title       String   @default("新项目")
+  description String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  messages     Message[]
+  codeVersions CodeVersion[]
+  
+  @@map("projects")
+}
+
+// 消息表
+model Message {
+  id        String   @id @default(cuid())
+  role      String   // 'user' | 'assistant'
+  content   String
+  createdAt DateTime @default(now())
+  
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@map("messages")
+}
+
+// 代码版本表
+model CodeVersion {
+  id        String   @id @default(cuid())
+  html      String   @default("")
+  css       String   @default("")
+  js        String   @default("")
+  version   Int      @default(1)
+  createdAt DateTime @default(now())
+  
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  @@index([projectId])
+  @@map("code_versions")
+}
