@@ -8,6 +8,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   createdAt?: Date;
+  code?: { html: string; css: string; js: string; description: string };
 }
 
 interface MessageListProps {

@@ -182,16 +182,32 @@ ${contextInfo}
     return artifact;
   }
 
-  // 主流程：Plan & Execute
+  // 主流程：Plan & Execute（支持上下文检索）
   async generateCode(
     userInput: string,
-    onProgress?: (progress: { currentTask: string; completed: number; total: number }) => void
+    options?: {
+      projectId?: string;
+      useContext?: boolean;
+      contextRetriever?: (query: string) => Promise<string>;
+      onProgress?: (progress: { currentTask: string; completed: number; total: number }) => void;
+    }
   ): Promise<CodeArtifact> {
     try {
-      // 1. Planner: 创建计划
-      const plan = await this.createPlan(userInput);
+      // 1. 如果启用上下文检索，先获取相关上下文
+      let context = '';
+      if (options?.useContext && options?.contextRetriever) {
+        console.log('🔍 检索上下文...');
+        context = await options.contextRetriever(userInput);
+        if (context) {
+          console.log('✅ 上下文检索完成');
+        }
+      }
+
+      // 2. Planner: 创建计划
+      const planInput = context ? `${context}\n\n用户需求：${userInput}` : userInput;
+      const plan = await this.createPlan(planInput);
       
-      // 2. Executor: 逐步执行
+      // 3. Executor: 逐步执行
       let currentCode: CodeArtifact | undefined;
       
       for (let i = 0; i < plan.tasks.length; i++) {
@@ -199,7 +215,7 @@ ${contextInfo}
         task.status = 'running';
         
         // 通知进度
-        onProgress?.({
+        options?.onProgress?.({
           currentTask: task.description,
           completed: i,
           total: plan.tasks.length,
@@ -207,7 +223,7 @@ ${contextInfo}
         
         // 执行任务
         const artifact = await this.executeTask(task, {
-          userInput,
+          userInput: planInput, // 使用带上下文的输入
           allTasks: plan.tasks,
           previousCode: currentCode,
         });

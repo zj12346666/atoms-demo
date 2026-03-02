@@ -53,3 +53,7 @@ prisma/*.db-journal
 *.swo
 *~
 .cursor/
+
+# logs
+/log/
+*.log

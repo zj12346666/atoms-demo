@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import { IframePreview } from './IframePreview';
+import { WebContainerPreview } from './WebContainerPreview';
 import { Button } from '../ui/Button';
 
 interface PreviewPanelProps {
@@ -11,12 +12,14 @@ interface PreviewPanelProps {
     js: string;
     description?: string;
   };
+  sessionId?: string;
 }
 
 type DeviceType = 'desktop' | 'tablet' | 'mobile';
 
-export function PreviewPanel({ code }: PreviewPanelProps) {
+export function PreviewPanel({ code, sessionId }: PreviewPanelProps) {
   const [device, setDevice] = useState<DeviceType>('desktop');
+  const [previewMode, setPreviewMode] = useState<'simple' | 'webcontainer'>('simple');
 
   const deviceSizes = {
     desktop: 'w-full',
@@ -33,10 +36,40 @@ export function PreviewPanel({ code }: PreviewPanelProps) {
             <h2 className="text-lg font-semibold text-gray-800">🖥️ 实时预览</h2>
             <p className="text-xs text-gray-500 mt-1">
               {code?.description || '生成的应用将在这里显示'}
+              {code && ' • 代码已自动更新'}
             </p>
           </div>
 
+          {/* Preview mode selector */}
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1 border border-gray-200 rounded-lg p-1">
+              <button
+                onClick={() => setPreviewMode('simple')}
+                className={`px-2 py-1 text-xs rounded ${
+                  previewMode === 'simple'
+                    ? 'bg-blue-500 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+              >
+                简单预览
+              </button>
+              <button
+                onClick={() => setPreviewMode('webcontainer')}
+                className={`px-2 py-1 text-xs rounded ${
+                  previewMode === 'webcontainer'
+                    ? 'bg-blue-500 text-white'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
+                disabled={!sessionId}
+                title={!sessionId ? '需要 sessionId 才能使用 WebContainer' : ''}
+              >
+                WebContainer
+              </button>
+            </div>
+          </div>
+
           {/* Device selector */}
+          {previewMode === 'simple' && (
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -96,12 +129,17 @@ export function PreviewPanel({ code }: PreviewPanelProps) {
               </svg>
             </Button>
           </div>
+          )}
         </div>
       </div>
 
       {/* Preview area */}
       <div className="flex-1 overflow-auto p-4">
-        {code ? (
+        {previewMode === 'webcontainer' && sessionId ? (
+          <div className="h-full border border-gray-300 rounded-lg shadow-lg overflow-hidden bg-white">
+            <WebContainerPreview sessionId={sessionId} />
+          </div>
+        ) : code ? (
           <div className={`${deviceSizes[device]} h-full transition-all duration-300`}>
             <div className="h-full border border-gray-300 rounded-lg shadow-lg overflow-hidden bg-white">
               <IframePreview html={code.html} css={code.css} js={code.js} />

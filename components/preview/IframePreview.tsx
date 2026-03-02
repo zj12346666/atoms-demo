@@ -20,13 +20,71 @@ export function IframePreview({ html, css, js }: IframePreviewProps) {
     const doc = iframeRef.current.contentDocument;
     if (!doc) return;
 
+    // 检测是否使用了 Tailwind 类名
+    const usesTailwind = html.includes('class=') && (
+      html.includes('flex') || 
+      html.includes('grid') || 
+      html.includes('bg-') || 
+      html.includes('text-') ||
+      html.includes('p-') ||
+      html.includes('m-')
+    );
+    
+    // 如果使用了 Tailwind，使用内联的基础样式（避免 COEP 问题）
+    // 注意：由于 COEP 限制，无法加载外部 CDN，只能使用内联样式
+    const tailwindStyles = usesTailwind 
+      ? `<style>
+        /* Tailwind CSS 基础样式 - 简化版（避免 COEP 限制） */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        .flex { display: flex; }
+        .grid { display: grid; }
+        .hidden { display: none; }
+        .block { display: block; }
+        .inline-block { display: inline-block; }
+        .items-center { align-items: center; }
+        .justify-center { justify-content: center; }
+        .justify-between { justify-content: space-between; }
+        .flex-col { flex-direction: column; }
+        .flex-row { flex-direction: row; }
+        .flex-wrap { flex-wrap: wrap; }
+        .gap-1 { gap: 0.25rem; }
+        .gap-2 { gap: 0.5rem; }
+        .gap-4 { gap: 1rem; }
+        .p-1 { padding: 0.25rem; }
+        .p-2 { padding: 0.5rem; }
+        .p-4 { padding: 1rem; }
+        .px-4 { padding-left: 1rem; padding-right: 1rem; }
+        .py-2 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+        .m-2 { margin: 0.5rem; }
+        .mb-2 { margin-bottom: 0.5rem; }
+        .mt-2 { margin-top: 0.5rem; }
+        .text-center { text-align: center; }
+        .text-sm { font-size: 0.875rem; }
+        .text-lg { font-size: 1.125rem; }
+        .font-bold { font-weight: 700; }
+        .rounded { border-radius: 0.25rem; }
+        .rounded-lg { border-radius: 0.5rem; }
+        .bg-white { background-color: white; }
+        .bg-gray-100 { background-color: #f3f4f6; }
+        .bg-blue-500 { background-color: #3b82f6; }
+        .text-white { color: white; }
+        .text-gray-600 { color: #4b5563; }
+        .border { border-width: 1px; }
+        .border-gray-200 { border-color: #e5e7eb; }
+        .w-full { width: 100%; }
+        .h-full { height: 100%; }
+        .cursor-pointer { cursor: pointer; }
+        .hover\\:bg-gray-100:hover { background-color: #f3f4f6; }
+      </style>`
+      : '';
+
     const fullHTML = `
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script src="https://cdn.tailwindcss.com"></script>
+  ${tailwindStyles}
   <style>${css}</style>
 </head>
 <body>
@@ -70,7 +128,16 @@ export function IframePreview({ html, css, js }: IframePreviewProps) {
         window.parent.postMessage({ 
           type: 'console', 
           level: 'error', 
-          message: \`Error: \${e.message} at line \${e.lineno}\`
+          message: \`Error: \${e.message} at line \${e.lineno}\${e.filename ? ' in ' + e.filename : ''}\`
+        }, '*');
+      });
+      
+      // 捕获未处理的 Promise 拒绝
+      window.addEventListener('unhandledrejection', (e) => {
+        window.parent.postMessage({ 
+          type: 'console', 
+          level: 'error', 
+          message: \`Unhandled Promise Rejection: \${e.reason}\`
         }, '*');
       });
     })();
@@ -80,6 +147,9 @@ export function IframePreview({ html, css, js }: IframePreviewProps) {
       ${js}
     } catch (e) {
       console.error('Execution error:', e.message);
+      if (e.stack) {
+        console.error('Stack trace:', e.stack);
+      }
     }
   </script>
 </body>

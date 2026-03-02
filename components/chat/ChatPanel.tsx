@@ -1,24 +1,115 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { ChatInput } from './ChatInput';
 import { MessageList } from './MessageList';
+import { WorkflowProgress } from './WorkflowProgress';
+import { getWebSocketClient, FileUpdateEvent } from '@/lib/websocket-client';
 
 interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   createdAt: Date;
+  code?: { html: string; css: string; js: string; description: string }; // 附带代码数据
 }
 
 interface ChatPanelProps {
   projectId: string;
+  sessionId: string;
+  userId: string;
+  projectName?: string;
   onCodeGenerated: (code: { html: string; css: string; js: string; description: string }) => void;
+  onSessionIdChange?: (newSessionId: string) => void;
+  onFilesUpdated?: () => void; // 文件更新回调
 }
 
-export function ChatPanel({ projectId, onCodeGenerated }: ChatPanelProps) {
+export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGenerated, onSessionIdChange, onFilesUpdated }: ChatPanelProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadingHistory, setLoadingHistory] = useState(false);
+  const [showProgress, setShowProgress] = useState(false);
+  const lastLoadedSessionIdRef = useRef<string | null>(null); // 跟踪已加载的 sessionId，避免重复请求
+  
+  // 初始化 WebSocket 客户端
+  useEffect(() => {
+    const wsClient = getWebSocketClient();
+    
+    // 连接 WebSocket
+    if (!wsClient.getConnected()) {
+      wsClient.connect();
+    }
+
+    // 设置文件更新处理器
+    wsClient.setHandlers({
+      onFileUpdates: (events: FileUpdateEvent[]) => {
+        // 文件更新时，触发刷新
+        if (onFilesUpdated) {
+          console.log('📝 收到文件更新事件，刷新文件列表');
+          setTimeout(() => {
+            onFilesUpdated();
+          }, 500);
+        }
+      },
+    });
+
+    return () => {
+      // 组件卸载时不断开连接（可能还有其他组件在使用）
+    };
+  }, [onFilesUpdated]);
+
+  // 加载会话历史记录
+  useEffect(() => {
+    const loadSessionHistory = async () => {
+      if (!sessionId) {
+        setMessages([]);
+        lastLoadedSessionIdRef.current = null;
+        return;
+      }
+
+      // 如果已经加载过这个 session，跳过（避免重复请求）
+      if (lastLoadedSessionIdRef.current === sessionId) {
+        return;
+      }
+
+      try {
+        setLoadingHistory(true);
+        const response = await fetch(`/api/session?sessionId=${sessionId}`);
+        const data = await response.json();
+
+        if (data.success && data.session) {
+          // 标记已加载
+          lastLoadedSessionIdRef.current = sessionId;
+
+          // 转换会话历史为消息格式
+          const historyMessages: Message[] = data.session.conversationHistory
+            ?.filter((msg: any) => msg.role !== 'system') // 过滤掉系统消息（思考过程）
+            .map((msg: any) => ({
+              id: msg.id || `msg-${msg.timestamp}`,
+              role: msg.role === 'assistant' ? 'assistant' : 'user',
+              content: msg.content,
+              createdAt: new Date(msg.timestamp),
+              code: msg.code,
+            })) || [];
+
+          setMessages(historyMessages);
+
+          // 如果有生成的代码，自动加载预览
+          if (data.session.generatedCode && onCodeGenerated) {
+            onCodeGenerated(data.session.generatedCode);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load session history:', error);
+      } finally {
+        setLoadingHistory(false);
+      }
+    };
+
+    loadSessionHistory();
+    // 只在 sessionId 变化时加载，移除 onCodeGenerated 依赖避免重复请求
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   const handleSend = async (content: string) => {
     // 添加用户消息
@@ -30,43 +121,77 @@ export function ChatPanel({ projectId, onCodeGenerated }: ChatPanelProps) {
     };
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
+    setShowProgress(true); // 显示进度条
 
     try {
-      // 调用 API 生成代码
-      const response = await fetch('/api/generate', {
+      // 订阅 WebSocket（如果 sessionId 存在）
+      if (sessionId) {
+        const wsClient = getWebSocketClient();
+        wsClient.subscribe(sessionId);
+      }
+
+      // 调用 VIP Agent API（使用新的工作流）
+      const response = await fetch('/api/vip-agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: content, projectId }),
+        body: JSON.stringify({ prompt: content, sessionId, userId }),
       });
 
       const data = await response.json();
 
       if (data.success) {
+        // 更新 sessionId（如果 API 返回了新的 sessionId）
+        const actualSessionId = data.sessionId || sessionId;
+        if (actualSessionId && actualSessionId !== sessionId && onSessionIdChange) {
+          onSessionIdChange(actualSessionId);
+          console.log('✅ Session ID 已更新:', actualSessionId);
+          
+          // 订阅新的 session
+          const wsClient = getWebSocketClient();
+          wsClient.subscribe(actualSessionId);
+        }
+
+        // VIP Agent 返回的是 fileChanges，不是 code
         // 添加 AI 响应
+        const planInfo = data.plan ? `\n\n**实现方案：**\n${data.plan}` : '';
+        const fileSummary = data.fileChanges?.map((fc: any) => `- ${fc.path} (${fc.action})`).join('\n') || '';
+        const validationInfo = data.validation?.attempts 
+          ? `\n\n**验证：** ${data.validation.attempts} 次尝试后通过`
+          : '';
+        
         const aiMessage: Message = {
           id: (Date.now() + 1).toString(),
           role: 'assistant',
-          content: data.code.description || '代码已生成，请查看右侧预览',
+          content: `✅ VIP Code Agent 完成！${planInfo}\n\n**文件变更**（共 ${data.fileChanges?.length || 0} 个）：\n${fileSummary}${validationInfo}\n\n文件已自动更新，你可以继续提出新的需求进行调整。`,
           createdAt: new Date(),
         };
         setMessages((prev) => [...prev, aiMessage]);
 
-        // 触发代码预览
-        onCodeGenerated(data.code);
+        // 文件更新会通过 WebSocket 自动触发刷新
+        if (onFilesUpdated) {
+          setTimeout(() => {
+            console.log('🔄 触发文件列表刷新...');
+            onFilesUpdated();
+          }, 1000);
+        }
       } else {
-        throw new Error(data.error || '生成失败');
+        // API 返回了错误
+        const errorMsg = data.error || '生成失败';
+        const hint = data.hint || '';
+        throw new Error(errorMsg + (hint ? `\n\n💡 ${hint}` : ''));
       }
     } catch (error: any) {
       console.error('Generate error:', error);
       const errorMessage: Message = {
         id: (Date.now() + 1).toString(),
         role: 'assistant',
-        content: `抱歉，生成代码时出错：${error.message}\n\n${(error as any).hint || ''}`,
+        content: `❌ **抱歉，生成代码时出错**\n\n${error.message || '未知错误'}\n\n如果问题持续存在，请检查：\n1. PostgreSQL 数据库连接是否正常\n2. Session 是否已过期\n3. 网络连接是否正常`,
         createdAt: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setLoading(false);
+      setShowProgress(false); // 隐藏进度条
     }
   };
 
@@ -75,11 +200,22 @@ export function ChatPanel({ projectId, onCodeGenerated }: ChatPanelProps) {
       {/* Header */}
       <div className="border-b border-gray-200 px-4 py-3 bg-gray-50">
         <h2 className="text-lg font-semibold text-gray-800">💬 AI 对话</h2>
-        <p className="text-xs text-gray-500 mt-1">告诉 AI 你想要创建什么应用</p>
+        <p className="text-xs text-gray-500 mt-1">
+          {projectName ? `项目：${projectName}` : '告诉 AI 你想要创建什么应用'}
+        </p>
       </div>
 
       {/* Messages */}
-      <MessageList messages={messages} />
+      {loadingHistory ? (
+        <div className="flex-1 flex items-center justify-center">
+          <p className="text-sm text-gray-500">加载聊天记录...</p>
+        </div>
+      ) : (
+        <MessageList messages={messages} />
+      )}
+
+      {/* Workflow Progress */}
+      <WorkflowProgress sessionId={sessionId} visible={showProgress && loading} />
 
       {/* Input */}
       <ChatInput onSend={handleSend} disabled={loading} />
