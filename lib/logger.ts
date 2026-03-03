@@ -15,7 +15,9 @@ if (isServer) {
     path = require('path');
     // 安全访问 process.cwd()
     const cwd = typeof process !== 'undefined' && process.cwd ? process.cwd() : '.';
-    LOG_DIR = path.join(cwd, 'log');
+    if (path) {
+      LOG_DIR = path.join(cwd, 'log');
+    }
 
     // 确保 log 目录存在
     if (fs && !fs.existsSync(LOG_DIR)) {
