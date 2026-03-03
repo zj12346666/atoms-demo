@@ -7,10 +7,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
 import { VIPWorkflowManager } from '@/lib/vip-workflow-manager';
 import { SessionManager } from '@/lib/session-manager';
-import { webSocketManager } from '@/lib/websocket-manager-shared';
+import { WebSocketManager } from '@/lib/websocket-manager-shared';
 
 const sessionManager = new SessionManager();
 const workflowManager = new VIPWorkflowManager();
+const webSocketManager = WebSocketManager.getInstance();
 
 export async function POST(req: NextRequest) {
   try {
