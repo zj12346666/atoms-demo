@@ -1,6 +1,6 @@
 'use client';
 
-import { Tree, NodeApi } from 'react-arborist';
+import { Tree, NodeApi, TreeApi } from 'react-arborist';
 import { FileNode } from '@/lib/file-tree-utils';
 import { useRef, useEffect, useState } from 'react';
 
@@ -12,6 +12,7 @@ interface FileTreeArboristProps {
 
 export function FileTreeArborist({ data, onSelect, selectedPath }: FileTreeArboristProps) {
   const containerRef = useRef<HTMLDivElement>(null);
+  const treeRef = useRef<TreeApi<FileNode>>(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
 
   useEffect(() => {
@@ -39,10 +40,36 @@ export function FileTreeArborist({ data, onSelect, selectedPath }: FileTreeArbor
     };
   }, []);
 
+  // 当 selectedPath 变化时，选择对应的节点
+  useEffect(() => {
+    if (treeRef.current && selectedPath) {
+      // 递归查找匹配路径的节点
+      const findNodeByPath = (nodes: NodeApi<FileNode>[]): NodeApi<FileNode> | null => {
+        for (const node of nodes) {
+          if (node.data.path === selectedPath) {
+            return node;
+          }
+          if (node.children && node.children.length > 0) {
+            const found = findNodeByPath(node.children);
+            if (found) return found;
+          }
+        }
+        return null;
+      };
+
+      const targetNode = findNodeByPath(treeRef.current.visibleNodes);
+      if (targetNode) {
+        treeRef.current.select(targetNode);
+        treeRef.current.scrollTo(targetNode);
+      }
+    }
+  }, [selectedPath, data]);
+
   return (
     <div ref={containerRef} className="h-full w-full">
       {dimensions.width > 0 && dimensions.height > 0 && (
         <Tree
+          ref={treeRef}
           data={data}
           width={dimensions.width}
           height={dimensions.height}
@@ -56,7 +83,6 @@ export function FileTreeArborist({ data, onSelect, selectedPath }: FileTreeArbor
               onSelect(null);
             }
           }}
-          selectedIds={selectedPath ? [selectedPath] : []}
         >
         {({ style, node, dragHandle }) => (
           <div
