@@ -1,5 +1,7 @@
 // 测试 Prisma Client 初始化问题
 
+import { PrismaClient } from '@prisma/client';
+
 const fs = require('fs');
 const path = require('path');
 
@@ -113,3 +115,5 @@ try {
   console.log('      rm -rf .next');
   console.log('   5. 重启应用');
 }
+
+export {};

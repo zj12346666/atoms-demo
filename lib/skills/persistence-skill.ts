@@ -287,10 +287,14 @@ export class PersistenceSkill {
     );
 
     // 2. 如果提交成功，刷新符号索引
-    let reindex = {
+    let reindex: {
+      success: boolean;
+      updatedSymbols: number;
+      errors?: string[];
+    } = {
       success: false,
       updatedSymbols: 0,
-      errors: ['文件提交失败，跳过索引更新'] as string[],
+      errors: ['文件提交失败，跳过索引更新'],
     };
 
     if (persistence.success) {

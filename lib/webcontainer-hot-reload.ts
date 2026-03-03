@@ -8,6 +8,7 @@
 
 import { WebContainer } from '@webcontainer/api';
 import { getWebSocketClient, FileUpdateEvent } from './websocket-client';
+import { logger } from './logger';
 
 export interface PackageJsonState {
   hash: string;

@@ -90,7 +90,7 @@ export class SymbolExtractor {
   /**
    * 使用正则表达式提取（fallback）
    */
-  private extractWithRegex(
+  private async extractWithRegex(
     filePath: string,
     content: string
   ): Promise<ExtractedSymbol[]> {

@@ -111,12 +111,13 @@ class WebContainerManager {
     this.refCount = 0;
 
     console.log('🧹 [WebContainerManager] 开始清理 WebContainer 实例...');
-    this.teardownPromise = instance.teardown()
+    const teardownResult = instance.teardown();
+    this.teardownPromise = Promise.resolve(teardownResult)
       .then(() => {
         console.log('✅ [WebContainerManager] WebContainer 清理完成');
         this.teardownPromise = null;
       })
-      .catch((error) => {
+      .catch((error: any) => {
         console.error('❌ [WebContainerManager] WebContainer 清理失败:', error);
         this.teardownPromise = null;
         throw error;

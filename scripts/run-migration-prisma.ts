@@ -3,7 +3,6 @@
  * 从 .env.local 读取数据库配置并执行迁移SQL
  */
 
-import * as dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
@@ -11,7 +10,25 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 // 加载环境变量
-dotenv.config({ path: '.env.local' });
+function loadEnv() {
+  try {
+    const envPath = join(process.cwd(), '.env.local');
+    const envContent = readFileSync(envPath, 'utf-8');
+    envContent.split('\n').forEach(line => {
+      const trimmed = line.trim();
+      if (trimmed && !trimmed.startsWith('#')) {
+        const [key, ...valueParts] = trimmed.split('=');
+        if (key && valueParts.length > 0) {
+          const value = valueParts.join('=').trim().replace(/^["']|["']$/g, '');
+          process.env[key.trim()] = value;
+        }
+      }
+    });
+  } catch (error) {
+    // 如果文件不存在，忽略错误
+  }
+}
+loadEnv();
 
 const databaseUrl = process.env.DATABASE_URL || 
                     process.env.POSTGRES_URL || 
