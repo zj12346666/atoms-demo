@@ -208,11 +208,8 @@ export async function POST(req: NextRequest) {
             thinking: `检测到 ${validationResult.errors.length} 个错误，正在使用 AI 修复...`,
           });
 
-          // 调用修复 API（直接调用函数而不是 HTTP 请求）
+          // 调用修复 API（通过 HTTP 请求）
           try {
-            // 导入修复函数
-            const { fixErrors } = await import('@/app/api/fix-errors/route');
-            
             // 创建修复请求
             const fixRequest = new Request(`${req.nextUrl.origin}/api/fix-errors`, {
               method: 'POST',
