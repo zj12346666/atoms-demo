@@ -10,7 +10,6 @@ import { SessionManager } from '@/lib/session-manager';
 import { WebSocketManager } from '@/lib/websocket-manager-shared';
 
 const sessionManager = new SessionManager();
-const workflowManager = new VIPWorkflowManager();
 const webSocketManager = WebSocketManager.getInstance();
 
 export async function POST(req: NextRequest) {
@@ -68,6 +67,12 @@ ${errorMessages}
       progress: 50,
       details: `发现 ${errors.length} 个错误，正在使用 AI 修复`,
     });
+
+    // 初始化VIPWorkflowManager（需要 apiKey 和 baseURL）
+    const workflowManager = new VIPWorkflowManager(
+      'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0',
+      'https://open.bigmodel.cn/api/paas/v4'
+    );
 
     // 执行修复工作流（静默模式：不通知用户）
     const result = await workflowManager.execute(
