@@ -5,7 +5,7 @@ import { MessageItem } from './MessageItem';
 
 interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'system';
   content: string;
   createdAt?: Date;
   code?: { html: string; css: string; js: string; description: string };
@@ -44,14 +44,16 @@ export function MessageList({ messages }: MessageListProps) {
         </div>
       ) : (
         <>
-          {messages.map((message) => (
-            <MessageItem
-              key={message.id}
-              role={message.role}
-              content={message.content}
-              timestamp={message.createdAt}
-            />
-          ))}
+          {messages
+            .filter((message) => message.role !== 'system') // 过滤掉系统消息
+            .map((message) => (
+              <MessageItem
+                key={message.id}
+                role={message.role as 'user' | 'assistant'} // 类型断言，因为已经过滤了 system
+                content={message.content}
+                timestamp={message.createdAt}
+              />
+            ))}
           <div ref={bottomRef} />
         </>
       )}
