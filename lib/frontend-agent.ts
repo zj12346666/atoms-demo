@@ -15,6 +15,8 @@ export type AgentStage =
   | 'code_generation'      // 5. 代码生成（分文件）
   | 'sandbox_validation'   // 6. 沙箱验证
   | 'persistence'          // 7. 持久化与索引更新
+  | 'validation'           // 8. 代码验证
+  | 'fixing'               // 9. 错误修复
   | 'completed'
   | 'failed';
 
