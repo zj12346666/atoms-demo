@@ -1,0 +1,40 @@
+{
+  "buildCommand": "next build",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "functions": {
+    "app/api/vip-agent/route.ts": {
+      "maxDuration": 300
+    },
+    "app/api/chat/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/generate/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/fix-errors/route.ts": {
+      "maxDuration": 60
+    },
+    "app/api/compile/route.ts": {
+      "maxDuration": 30
+    },
+    "app/api/events/[sessionId]/route.ts": {
+      "maxDuration": 300
+    }
+  },
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        {
+          "key": "Cross-Origin-Opener-Policy",
+          "value": "same-origin"
+        },
+        {
+          "key": "Cross-Origin-Embedder-Policy",
+          "value": "require-corp"
+        }
+      ]
+    }
+  ]
+}

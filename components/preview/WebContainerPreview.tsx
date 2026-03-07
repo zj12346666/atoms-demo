@@ -1104,6 +1104,10 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
         }
 
         if (needsInstall) {
+          if (!mounted) {
+            isInitializingRef.current = false;
+            return;
+          }
           console.log('📦 [WebContainer] 开始安装依赖...');
           const installProcess = await webcontainer.spawn('npm', ['install']);
           
@@ -1172,6 +1176,10 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
         );
 
         // 7. 启动开发服务器
+        if (!mounted) {
+          isInitializingRef.current = false;
+          return;
+        }
         console.log('🚀 [WebContainer] 启动开发服务器...');
         setStatus('starting');
         const devProcess = await webcontainer.spawn('npm', ['run', 'dev']);
@@ -1242,6 +1250,14 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
         };
 
       } catch (err: any) {
+        // 如果组件已卸载且错误是 "Process aborted"，这是预期的正常行为：
+        // teardown() 会中止所有正在进行中的进程（npm install / dev server）
+        if (!mounted && (err.message?.includes('Process aborted') || err.message?.includes('aborted'))) {
+          console.log('ℹ️ [WebContainer] 组件已卸载，WebContainer 进程被中止 (正常行为，非错误)');
+          isInitializingRef.current = false;
+          return;
+        }
+
         console.error('❌ [WebContainer] 初始化失败:', err);
         console.error('❌ [WebContainer] 错误详情:', {
           message: err.message,

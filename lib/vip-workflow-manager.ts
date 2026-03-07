@@ -1,15 +1,16 @@
 /**
  * VIP Code Agent - WorkflowManager (基于 Skill 模块重构)
- * 核心状态机：Intent & Retrieval → MultiFileCodeGen → Validation Loop → WebContainer Compatibility Check → Code Review → Persistence & Reindex
+ * 核心状态机：Intent & Retrieval → MultiFileCodeGen → Validation Loop → WebContainer Compatibility Check → EsbuildCompile Check → Code Review → Persistence & Reindex
  * 
- * 使用 7 大核心 Skill 模块：
+ * 使用 8 大核心 Skill 模块：
  * 1. SymbolicDiscoverySkill - 符号导航与检索
  * 2. MultiFileEngineeringSkill - 原子化多文件生成
- * 3. SandboxValidationSkill - 自动化沙箱校验
+ * 3. SandboxValidationSkill - 自动化沙箱校验（tsc 类型检查）
  * 4. WebContainerCompatibilitySkill - WebContainer 兼容性检查（文件名大小写、路径格式等）
- * 5. CodeReviewSkill - 代码质量审查
- * 6. PersistenceSkill - 确定性持久化
- * 7. EnvironmentSyncSkill - 环境感知与通知
+ * 5. EsbuildCompileSkill - esbuild 真实打包编译校验（检测缺失文件、错误 import 等）
+ * 6. CodeReviewSkill - 代码质量审查
+ * 7. PersistenceSkill - 确定性持久化
+ * 8. EnvironmentSyncSkill - 环境感知与通知
  */
 
 import { ensureConnection } from './db';
@@ -21,6 +22,7 @@ import {
   MultiFileEngineeringSkill,
   SandboxValidationSkill,
   WebContainerCompatibilitySkill,
+  EsbuildCompileSkill,
   CodeReviewSkill,
   PersistenceSkill,
   EnvironmentSyncSkill,
@@ -139,11 +141,12 @@ export class VIPWorkflowManager {
   private fileManager: FileManager;
   private maxFixAttempts = 3;
 
-  // 7 大核心 Skill 模块
+  // 8 大核心 Skill 模块
   private symbolicDiscovery: SymbolicDiscoverySkill;
   private multiFileEngineering: MultiFileEngineeringSkill;
   private sandboxValidation: SandboxValidationSkill;
   private webContainerCompatibility: WebContainerCompatibilitySkill;
+  private esbuildCompile: EsbuildCompileSkill;
   private codeReview: CodeReviewSkill;
   private persistence: PersistenceSkill;
   private environmentSync: EnvironmentSyncSkill;
@@ -160,6 +163,7 @@ export class VIPWorkflowManager {
     this.multiFileEngineering = new MultiFileEngineeringSkill();
     this.sandboxValidation = new SandboxValidationSkill();
     this.webContainerCompatibility = new WebContainerCompatibilitySkill();
+    this.esbuildCompile = new EsbuildCompileSkill();
     this.codeReview = new CodeReviewSkill(apiKey, baseURL);
     this.persistence = new PersistenceSkill();
     this.environmentSync = new EnvironmentSyncSkill();
@@ -452,12 +456,70 @@ export class VIPWorkflowManager {
             continue; // 继续循环，重新生成代码
           }
 
-          // 兼容性检查通过，退出循环
+          // ── 阶段3c: esbuild 真实编译检查 ────────────────────────────────
+          onProgress({
+            state: 'validation',
+            message: '🔨 运行 esbuild 编译检查...',
+            progress: 68,
+            details: '对暂存文件执行真实 bundle 编译，检测缺失 import、路径错误等',
+          });
+
+          const stagedFilesForEsbuild = this.multiFileEngineering.getAllStagedFiles();
+          const compileReport = await this.esbuildCompile.compileAndCheck(stagedFilesForEsbuild);
+
+          if (!compileReport.success) {
+            const errCount = compileReport.errors.length;
+            onProgress({
+              state: 'validation',
+              message: `❌ esbuild 编译失败，发现 ${errCount} 个错误`,
+              progress: 68,
+              details: compileReport.errors.slice(0, 3).map(e => `  • ${e.file}:${e.line} - ${e.message}`).join('\n'),
+            });
+
+            onProgress({
+              state: 'fixing',
+              message: `🔧 准备自动修复编译错误... (第 ${fixAttempts + 1}/${this.maxFixAttempts} 次尝试)`,
+              progress: 69,
+              details: '将 esbuild 错误信息反馈给 AI 进行修复',
+            });
+
+            fixAttempts++;
+            if (fixAttempts >= this.maxFixAttempts) {
+              this.multiFileEngineering.clearStaged();
+              return {
+                success: false,
+                plan,
+                fileChanges,
+                errors: compileReport.errors.map(e => e.raw),
+                warnings: compileReport.warnings.map(w => w.raw),
+                validationAttempts: fixAttempts,
+              };
+            }
+
+            // 将 esbuild 错误追加到 prompt，让 AI 修复后重新生成
+            const errorsText = this.esbuildCompile.formatErrorsForPrompt(
+              compileReport.errors,
+              compileReport.autoCreatedFiles
+            );
+            prompt = `${prompt}\n\n${errorsText}`;
+            continue; // 返回代码生成循环顶部，重新生成
+          }
+
+          if (compileReport.autoCreatedFiles.length > 0) {
+            onProgress({
+              state: 'validation',
+              message: `⚠️ esbuild 编译通过，但以下 CSS 文件缺失（已自动补空）：${compileReport.autoCreatedFiles.join(', ')}`,
+              progress: 69,
+              details: '建议生成代码时同步生成对应 CSS 文件',
+            });
+          }
+
+          // 所有检查通过，退出循环
           onProgress({
             state: 'validation',
             message: '✅ 所有检查通过！',
             progress: 70,
-            details: `类型检查 ✓  兼容性检查 ✓  路径格式 ✓  文件名规范 ✓`,
+            details: `类型检查 ✓  兼容性检查 ✓  esbuild 编译 ✓  路径格式 ✓  文件名规范 ✓`,
           });
           break;
         }

@@ -35,7 +35,12 @@ class WebContainerManager {
     // 如果正在清理，等待清理完成
     if (this.teardownPromise) {
       console.log('⏳ [WebContainerManager] 等待清理完成...');
-      await this.teardownPromise;
+      try {
+        await this.teardownPromise;
+      } catch (e) {
+        // teardown 内部错误（如 Process aborted）不应阻止重新启动
+        console.warn('⚠️ [WebContainerManager] 清理过程中出现错误（忽略）:', (e as any)?.message);
+      }
       this.teardownPromise = null;
     }
 

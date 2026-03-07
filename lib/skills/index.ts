@@ -23,3 +23,6 @@ export type { PersistenceResult } from './persistence-skill';
 
 export { EnvironmentSyncSkill } from './environment-sync-skill';
 export type { ProjectMapNode } from './environment-sync-skill';
+
+export { EsbuildCompileSkill } from './esbuild-compile-skill';
+export type { CompileError, CompileReport } from './esbuild-compile-skill';

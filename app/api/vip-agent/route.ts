@@ -65,11 +65,10 @@ export async function POST(req: NextRequest) {
       content: prompt,
     });
 
-    // 初始化VIPWorkflowManager
-    const workflow = new VIPWorkflowManager(
-      'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0',
-      'https://open.bigmodel.cn/api/paas/v4'
-    );
+    // 初始化VIPWorkflowManager（API key 从环境变量读取，回退到默认值）
+    const zhipuApiKey = process.env.ZHIPUAI_API_KEY || 'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0';
+    const zhipuBaseURL = process.env.ZHIPUAI_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4';
+    const workflow = new VIPWorkflowManager(zhipuApiKey, zhipuBaseURL);
 
     // 收集进度信息
     const progressLog: WorkflowProgress[] = [];
