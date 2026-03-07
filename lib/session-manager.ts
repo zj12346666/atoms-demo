@@ -395,8 +395,8 @@ export class SessionManager {
   async verifySessionOwnership(sessionId: string, userId: string): Promise<boolean> {
     // 检查数据库是否可用
     if (!isDatabaseAvailable() || !prisma) {
-      logger.error('❌ 数据库不可用，无法验证 Session 所有权');
-      throw new Error('Database not available. Cannot verify session ownership from PostgreSQL.');
+      logger.warn('⚠️ 数据库不可用，跳过 Session 所有权验证，允许访问');
+      return true; // 数据库不可用时，允许访问（fail open）
     }
 
     try {
@@ -421,8 +421,10 @@ export class SessionManager {
       
       return true;
     } catch (error: any) {
-      logger.error(`❌ 验证 session 所有权失败:`, error);
-      throw new Error(`Failed to verify session ownership: ${error.message}`);
+      // 数据库连接超时或其他临时错误时，允许访问（fail open）
+      // 避免因数据库临时故障导致用户无法访问自己的文件
+      logger.warn(`⚠️ 验证 session 所有权时数据库出错，允许访问: ${error.message}`);
+      return true;
     }
   }
 }

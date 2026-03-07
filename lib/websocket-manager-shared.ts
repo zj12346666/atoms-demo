@@ -1,19 +1,13 @@
 /**
- * WebSocket Manager - 共享实例（用于 server.js 和 API 路由）
- * 这个文件确保 server.js 和 API 路由使用同一个 WebSocketManager 实例
- * 
- * 支持两种模式：
- * 1. WebSocket (Socket.IO) - 本地开发/自托管
- * 2. SSE (Server-Sent Events) - Vercel 部署
+ * SSE Event Manager - 统一通过 PostgreSQL SSE 表推送事件
+ * 替代原来的 WebSocketManager（已移除 Socket.IO 依赖）
  */
 
-import { Server as SocketIOServer } from 'socket.io';
 import { logger } from './logger';
 
 // 动态导入 SSE 函数（避免循环依赖）
 let sendSSEEvent: ((sessionId: string, event: any) => Promise<boolean>) | null = null;
 
-// 延迟加载 SSE 模块（仅在需要时）
 async function getSSESender() {
   if (!sendSSEEvent) {
     try {
@@ -43,169 +37,65 @@ export interface WorkflowProgressEvent {
   details?: string;
 }
 
-// 版本号：每次修改 emit 逻辑时递增，强制热重载后重建实例
-const MANAGER_VERSION = 'sse-only-v1';
+const MANAGER_VERSION = 'sse-only-v2';
 
-// 全局单例（在 Node.js 进程中共享）
 declare global {
   // eslint-disable-next-line no-var
-  var __websocketManager: WebSocketManager | undefined;
+  var __sseEventManager: WebSocketManager | undefined;
   // eslint-disable-next-line no-var
-  var __websocketManagerVersion: string | undefined;
+  var __sseEventManagerVersion: string | undefined;
 }
 
 export class WebSocketManager {
-  private io: SocketIOServer | null = null;
-
   private constructor() {}
 
   static getInstance(): WebSocketManager {
-    // 在开发环境中，使用全局变量避免热重载时创建新实例
-    // 但若版本号不匹配（代码有改动），强制重建
     if (process.env.NODE_ENV === 'development') {
-      if (!global.__websocketManager || global.__websocketManagerVersion !== MANAGER_VERSION) {
-        global.__websocketManager = new WebSocketManager();
-        global.__websocketManagerVersion = MANAGER_VERSION;
-        logger.info(`🔄 WebSocketManager 实例已重建 (version: ${MANAGER_VERSION})`);
+      if (!global.__sseEventManager || global.__sseEventManagerVersion !== MANAGER_VERSION) {
+        global.__sseEventManager = new WebSocketManager();
+        global.__sseEventManagerVersion = MANAGER_VERSION;
       }
-      return global.__websocketManager;
+      return global.__sseEventManager;
     }
-    
-    // 生产环境使用模块级单例
-    if (!(WebSocketManager as any).instance) {
-      (WebSocketManager as any).instance = new WebSocketManager();
+    if (!(WebSocketManager as any)._instance) {
+      (WebSocketManager as any)._instance = new WebSocketManager();
     }
-    return (WebSocketManager as any).instance;
+    return (WebSocketManager as any)._instance;
   }
 
-  /**
-   * 初始化WebSocket服务器
-   */
-  initialize(io: SocketIOServer): void {
-    this.io = io;
-    
-    io.on('connection', (socket) => {
-      logger.info(`🔌 WebSocket客户端连接: ${socket.id}`);
-
-      // 订阅session
-      socket.on('subscribe', (sessionId: string) => {
-        socket.join(`session:${sessionId}`);
-        logger.info(`📡 客户端 ${socket.id} 订阅session: ${sessionId}`);
-      });
-
-      // 取消订阅
-      socket.on('unsubscribe', (sessionId: string) => {
-        socket.leave(`session:${sessionId}`);
-        logger.info(`📡 客户端 ${socket.id} 取消订阅session: ${sessionId}`);
-      });
-
-      socket.on('disconnect', () => {
-        logger.info(`🔌 WebSocket客户端断开: ${socket.id}`);
-      });
-    });
-
-    logger.info('✅ WebSocket服务器已初始化');
-  }
-
-  /**
-   * 设置 IO 实例（用于 API 路由）
-   */
-  setIO(io: SocketIOServer): void {
-    this.io = io;
-  }
-
-  /**
-   * 获取 IO 实例
-   */
-  getIO(): SocketIOServer | null {
-    return this.io;
-  }
-
-  /**
-   * 发送文件更新事件（强制 SSE 模式）
-   */
+  /** 发送单个文件更新事件 */
   async emitFileUpdate(event: FileUpdateEvent): Promise<void> {
     const sseSender = await getSSESender();
-    if (sseSender) {
-      const sent = await sseSender(event.sessionId, { ...event, type: 'file_update' });
-      if (sent) {
-        logger.info(`📤 [SSE] 写入文件更新到 DB (session:${event.sessionId}): ${event.type} ${event.path}`);
-        return;
-      }
+    if (!sseSender) return;
+    const sent = await sseSender(event.sessionId, { ...event, type: 'file_update' });
+    if (sent) {
+      logger.info(`📤 [SSE] 文件更新 (session:${event.sessionId}): ${event.type} ${event.path}`);
     }
-    logger.warn(`⚠️ [SSE] 写入文件更新失败 (session:${event.sessionId})，数据库不可用`);
   }
 
-  /**
-   * 批量发送文件更新事件（强制 SSE 模式）
-   */
+  /** 批量发送文件更新事件 */
   async emitFileUpdates(events: FileUpdateEvent[]): Promise<void> {
     const sseSender = await getSSESender();
-    if (!sseSender) {
-      logger.warn('⚠️ [SSE] 无法加载 SSE 模块，跳过文件更新通知');
-      return;
-    }
+    if (!sseSender) return;
 
-    // 按 sessionId 分组
-    const eventsBySession = new Map<string, FileUpdateEvent[]>();
-    for (const event of events) {
-      if (!eventsBySession.has(event.sessionId)) {
-        eventsBySession.set(event.sessionId, []);
-      }
-      eventsBySession.get(event.sessionId)!.push(event);
+    const bySession = new Map<string, FileUpdateEvent[]>();
+    for (const e of events) {
+      if (!bySession.has(e.sessionId)) bySession.set(e.sessionId, []);
+      bySession.get(e.sessionId)!.push(e);
     }
-
-    for (const [sessionId, sessionEvents] of eventsBySession.entries()) {
-      const sent = await sseSender(sessionId, { type: 'file_updates', events: sessionEvents });
-      if (sent) {
-        logger.info(`📤 [SSE] 批量写入 ${sessionEvents.length} 个文件更新到 DB (session:${sessionId})`);
-      } else {
-        logger.warn(`⚠️ [SSE] 批量写入文件更新失败 (session:${sessionId})，数据库不可用`);
-      }
+    for (const [sessionId, evts] of bySession) {
+      const sent = await sseSender(sessionId, { type: 'file_updates', events: evts });
+      if (sent) logger.info(`📤 [SSE] 批量文件更新 ${evts.length} 个 (session:${sessionId})`);
     }
   }
 
-  /**
-   * 发送工作流进度事件（强制 SSE 模式）
-   */
+  /** 发送工作流进度事件 */
   async emitWorkflowProgress(event: WorkflowProgressEvent): Promise<void> {
     const sseSender = await getSSESender();
-    if (sseSender) {
-      const sent = await sseSender(event.sessionId, { ...event, type: 'workflow_progress' });
-      if (sent) {
-        logger.info(`📊 [SSE] 写入进度到 DB → session:${event.sessionId}: [${event.state}] ${event.message} (${event.progress}%)`);
-        return;
-      }
-    }
-    logger.warn(`⚠️ [SSE] 写入进度失败 (session:${event.sessionId})，数据库不可用`);
-  }
-
-  /**
-   * 批量发送工作流进度事件（强制 SSE 模式）
-   */
-  async emitWorkflowProgresses(events: WorkflowProgressEvent[]): Promise<void> {
-    const sseSender = await getSSESender();
-    if (!sseSender) {
-      logger.warn('⚠️ [SSE] 无法加载 SSE 模块，跳过进度通知');
-      return;
-    }
-
-    // 按 sessionId 分组
-    const eventsBySession = new Map<string, WorkflowProgressEvent[]>();
-    for (const event of events) {
-      if (!eventsBySession.has(event.sessionId)) {
-        eventsBySession.set(event.sessionId, []);
-      }
-      eventsBySession.get(event.sessionId)!.push(event);
-    }
-
-    for (const [sessionId, sessionEvents] of eventsBySession.entries()) {
-      const sent = await sseSender(sessionId, { type: 'workflow_progresses', events: sessionEvents });
-      if (sent) {
-        logger.info(`📊 [SSE] 批量写入 ${sessionEvents.length} 个进度事件到 DB (session:${sessionId})`);
-      } else {
-        logger.warn(`⚠️ [SSE] 批量写入进度失败 (session:${sessionId})，数据库不可用`);
-      }
+    if (!sseSender) return;
+    const sent = await sseSender(event.sessionId, { ...event, type: 'workflow_progress' });
+    if (sent) {
+      logger.info(`📊 [SSE] 进度 (session:${event.sessionId}): [${event.state}] ${event.message} (${event.progress}%)`);
     }
   }
 }

@@ -6,7 +6,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { VIPWorkflowManager, WorkflowProgress } from '@/lib/vip-workflow-manager';
 import { SessionManager } from '@/lib/session-manager';
-import { WebSocketManager } from '@/lib/websocket-manager';
+import { WebSocketManager } from '@/lib/websocket-manager-shared';
 import { logger } from '@/lib/logger';
 import { ensureConnection, isDatabaseAvailable } from '@/lib/db';
 
@@ -22,7 +22,7 @@ export async function POST(req: NextRequest) {
       logger.warn('⚠️ 数据库不可用，但继续执行（将使用降级模式）');
     }
 
-    const { prompt, sessionId, userId, requestId } = await req.json();
+    const { prompt, images, sessionId, userId, requestId } = await req.json();
 
     if (!prompt) {
       return NextResponse.json(
@@ -75,7 +75,13 @@ export async function POST(req: NextRequest) {
 
     // 注入项目上下文到 Prompt（自动注入 package.json 和 tsconfig.json）
     const { agentPromptInjector } = await import('@/lib/agent-prompt-injector');
-    const enhancedPrompt = await agentPromptInjector.enhancePrompt(actualSessionId, prompt);
+    let enhancedPrompt = await agentPromptInjector.enhancePrompt(actualSessionId, prompt);
+
+    // 如果用户附带了图片，将图片数量说明追加到 prompt 中，供 AI 参考
+    if (images && Array.isArray(images) && images.length > 0) {
+      enhancedPrompt = `${enhancedPrompt}\n\n[用户附带了 ${images.length} 张参考图片，请根据图片内容生成对应的 UI/功能]`;
+      logger.info(`🖼️ 用户附带 ${images.length} 张图片`);
+    }
 
     // SSE 推送频道：优先使用 requestId（客户端提前订阅的频道），否则用 actualSessionId
     const sseChannelId = requestId || actualSessionId;

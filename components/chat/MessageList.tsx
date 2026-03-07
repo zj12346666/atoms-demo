@@ -7,6 +7,7 @@ interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  images?: string[];
   createdAt?: Date;
   code?: { html: string; css: string; js: string; description: string };
 }
@@ -49,8 +50,9 @@ export function MessageList({ messages }: MessageListProps) {
             .map((message) => (
               <MessageItem
                 key={message.id}
-                role={message.role as 'user' | 'assistant'} // 类型断言，因为已经过滤了 system
+                role={message.role as 'user' | 'assistant'}
                 content={message.content}
+                images={message.images}
                 timestamp={message.createdAt}
               />
             ))}

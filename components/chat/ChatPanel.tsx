@@ -10,6 +10,7 @@ interface Message {
   id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  images?: string[];
   createdAt: Date;
   code?: { html: string; css: string; js: string; description: string }; // 附带代码数据
 }
@@ -95,12 +96,13 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
-  const handleSend = async (content: string) => {
+  const handleSend = async (content: string, images?: string[]) => {
     // 添加用户消息
     const userMessage: Message = {
       id: Date.now().toString(),
       role: 'user',
       content,
+      images,
       createdAt: new Date(),
     };
     setMessages((prev) => [...prev, userMessage]);
@@ -143,7 +145,7 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
       const response = await fetch('/api/vip-agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: content, sessionId, userId, requestId }),
+        body: JSON.stringify({ prompt: content, images, sessionId, userId, requestId }),
       });
 
       const data = await response.json();
@@ -230,7 +232,12 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
       <WorkflowProgress progress={workflowProgress} visible={showProgress && loading} />
 
       {/* Input */}
-      <ChatInput onSend={handleSend} disabled={loading} />
+      <ChatInput
+        onSend={handleSend}
+        sessionId={actualSessionIdRef.current || sessionId}
+        projectId={projectId}
+        disabled={loading}
+      />
     </div>
   );
 }

@@ -3,10 +3,11 @@
 interface MessageItemProps {
   role: 'user' | 'assistant';
   content: string;
+  images?: string[];
   timestamp?: Date;
 }
 
-export function MessageItem({ role, content, timestamp }: MessageItemProps) {
+export function MessageItem({ role, content, images, timestamp }: MessageItemProps) {
   const isUser = role === 'user';
 
   return (
@@ -31,7 +32,20 @@ export function MessageItem({ role, content, timestamp }: MessageItemProps) {
             </span>
           )}
         </div>
-        <div className="text-sm whitespace-pre-wrap">{content}</div>
+        {images && images.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {images.map((src, idx) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={idx}
+                src={src}
+                alt={`图片 ${idx + 1}`}
+                className="max-h-48 max-w-full rounded-lg object-contain border border-white/20"
+              />
+            ))}
+          </div>
+        )}
+        {content && <div className="text-sm whitespace-pre-wrap mt-1">{content}</div>}
       </div>
     </div>
   );

@@ -3,7 +3,6 @@
 import { useState, useEffect, useImperativeHandle, forwardRef, useCallback, useRef } from 'react';
 import { FileTreeArborist } from './FileTreeArborist';
 import { MonacoCodeViewer } from './MonacoCodeViewer';
-import { IframePreview } from '../preview/IframePreview';
 import { WebContainerPreview } from '../preview/WebContainerPreview';
 import { buildFileTree, FileNode } from '@/lib/file-tree-utils';
 
@@ -20,8 +19,6 @@ interface ProjectFilesProps {
 }
 
 type ViewMode = 'files' | 'preview'; // 视图模式：文件树或预览
-type PreviewMode = 'simple' | 'webcontainer'; // 预览模式
-type DeviceType = 'desktop' | 'tablet' | 'mobile';
 
 export interface ProjectFilesRef {
   refresh: () => void;
@@ -33,8 +30,6 @@ export const ProjectFiles = forwardRef<ProjectFilesRef, ProjectFilesProps>(
     const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
     const [loading, setLoading] = useState(true);
     const [viewMode, setViewMode] = useState<ViewMode>('files'); // 默认显示文件树
-    const [previewMode, setPreviewMode] = useState<PreviewMode>('simple'); // 预览模式
-    const [device, setDevice] = useState<DeviceType>('desktop'); // 设备类型
     const [code, setCode] = useState<ProjectFilesProps['code']>(codeProp); // 本地代码状态
     const [leftPanelWidth, setLeftPanelWidth] = useState(33.33); // 默认 33.33% (1/3)
     const [isResizing, setIsResizing] = useState(false);
@@ -215,11 +210,6 @@ export const ProjectFiles = forwardRef<ProjectFilesRef, ProjectFilesProps>(
       );
     }
 
-    const deviceSizes = {
-      desktop: 'w-full',
-      tablet: 'w-[768px] mx-auto',
-      mobile: 'w-[375px] mx-auto',
-    };
 
     return (
       <div className="flex flex-col h-full">
@@ -265,80 +255,6 @@ export const ProjectFiles = forwardRef<ProjectFilesRef, ProjectFilesProps>(
             </div>
           </div>
 
-          {/* 预览模式选择器（仅在预览模式下显示） */}
-          {viewMode === 'preview' && (
-            <div className="flex items-center gap-2 mt-3">
-              <div className="flex gap-1 border border-gray-200 rounded-lg p-1 bg-white">
-                <button
-                  onClick={() => setPreviewMode('simple')}
-                  className={`px-2 py-1 text-xs rounded ${
-                    previewMode === 'simple'
-                      ? 'bg-blue-500 text-white'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  简单预览
-                </button>
-                <button
-                  onClick={() => setPreviewMode('webcontainer')}
-                  className={`px-2 py-1 text-xs rounded ${
-                    previewMode === 'webcontainer'
-                      ? 'bg-blue-500 text-white'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                  disabled={!sessionId}
-                  title={!sessionId ? '需要 sessionId 才能使用 WebContainer' : ''}
-                >
-                  WebContainer
-                </button>
-              </div>
-
-              {/* 设备选择器（仅在简单预览模式下显示） */}
-              {previewMode === 'simple' && code && (
-                <div className="flex gap-1">
-                  <button
-                    onClick={() => setDevice('desktop')}
-                    className={`p-1.5 rounded ${
-                      device === 'desktop'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
-                    }`}
-                    title="桌面"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => setDevice('tablet')}
-                    className={`p-1.5 rounded ${
-                      device === 'tablet'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
-                    }`}
-                    title="平板"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                  <button
-                    onClick={() => setDevice('mobile')}
-                    className={`p-1.5 rounded ${
-                      device === 'mobile'
-                        ? 'bg-blue-500 text-white'
-                        : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'
-                    }`}
-                    title="手机"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-                    </svg>
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Content */}
@@ -380,37 +296,11 @@ export const ProjectFiles = forwardRef<ProjectFilesRef, ProjectFilesProps>(
             </div>
           </div>
         ) : (
-          /* Preview Mode */
-          <div className="flex-1 overflow-auto p-4 bg-gray-50">
-            {previewMode === 'webcontainer' && sessionId ? (
-              <div className="h-full border border-gray-300 rounded-lg shadow-lg overflow-hidden bg-white">
-                <WebContainerPreview sessionId={sessionId} />
-              </div>
-            ) : code ? (
-              <div className={`${deviceSizes[device]} h-full transition-all duration-300`}>
-                <div className="h-full border border-gray-300 rounded-lg shadow-lg overflow-hidden bg-white">
-                  <IframePreview html={code.html} css={code.css} js={code.js} />
-                </div>
-              </div>
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400">
-                <svg
-                  className="w-24 h-24 mb-4"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"
-                  />
-                </svg>
-                <p className="text-lg font-medium">等待生成</p>
-                <p className="text-sm mt-2">在左侧输入你的需求，开始创建应用</p>
-              </div>
-            )}
+          /* Preview Mode - WebContainer Only */
+          <div className="flex-1 overflow-hidden bg-gray-50">
+            <div className="h-full border border-gray-300 rounded-lg shadow-lg overflow-hidden bg-white">
+              <WebContainerPreview sessionId={sessionId} />
+            </div>
           </div>
         )}
       </div>
