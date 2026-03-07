@@ -11,7 +11,7 @@ const globalForPrisma = globalThis as unknown as {
 
 // 判断是否配置了数据库
 // 直接写死 DATABASE_URL
-let databaseUrl = 'postgres://e2a3c935945e2f3f0633c1509531df994ec064a8480727bade7ca50bb42b65b7:sk_yxW1aGIQNE8rBK260cvz_@db.prisma.io:5432/postgres?sslmode=require';
+let databaseUrl = 'postgres://e2a3c935945e2f3f0633c1509531df994ec064a8480727bade7ca50bb42b65b7:sk_yxW1aGIQNE8rBK260cvz_@db.prisma.io:5432/postgres?sslmode=verify-full';
 
 // 清理 URL（移除可能的引号和空格）
 if (databaseUrl) {
