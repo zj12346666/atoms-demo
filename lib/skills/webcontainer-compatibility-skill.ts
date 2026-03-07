@@ -52,8 +52,10 @@ export class WebContainerCompatibilitySkill {
         const fileName = pathParts[pathParts.length - 1];
         
         // 检查是否是全小写的 React 组件文件（.tsx, .ts, .jsx, .js）
-        if (fileName.match(/^[a-z]+\.(tsx?|jsx?)$/)) {
-          const fileNameWithoutExt = fileName.replace(/\.[^.]*$/, '');
+        // 注意：main、index 等入口文件名是约定俗成的小写，不应被 PascalCase 转换
+        const fileNameWithoutExtCheck = fileName.replace(/\.[^.]*$/, '');
+        if (fileName.match(/^[a-z]+\.(tsx?|jsx?)$/) && !this.ENTRY_FILE_NAMES.has(fileNameWithoutExtCheck)) {
+          const fileNameWithoutExt = fileNameWithoutExtCheck;
           const fileExt = fileName.match(/\.[^.]*$/)?.[0] || '';
           const pascalCaseName = this.toPascalCase(fileNameWithoutExt);
           
@@ -178,9 +180,10 @@ export class WebContainerCompatibilitySkill {
             const pathParts = importPath.split('/');
             const importedFileName = pathParts[pathParts.length - 1];
             
-            // 检查是否是全小写的文件名
-            if (importedFileName.match(/^[a-z]+\.(tsx?|jsx?)$/)) {
-              const fileNameWithoutExt = importedFileName.replace(/\.[^.]*$/, '');
+            // 检查是否是全小写的文件名（入口文件名除外）
+            const importedFileNameWithoutExt = importedFileName.replace(/\.[^.]*$/, '');
+            if (importedFileName.match(/^[a-z]+\.(tsx?|jsx?)$/) && !this.ENTRY_FILE_NAMES.has(importedFileNameWithoutExt)) {
+              const fileNameWithoutExt = importedFileNameWithoutExt;
               const fileExt = importedFileName.match(/\.[^.]*$/)?.[0] || '';
               const pascalCaseName = this.toPascalCase(fileNameWithoutExt);
               
@@ -229,6 +232,14 @@ export class WebContainerCompatibilitySkill {
       .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join('');
   }
+
+  /**
+   * 不应被 PascalCase 转换的特殊入口文件名
+   * 这些文件名是约定俗成的小写，强制 PascalCase 会破坏 Vite 入口解析
+   */
+  private readonly ENTRY_FILE_NAMES = new Set([
+    'main', 'index', 'app.config', 'vite.config',
+  ]);
 
   /**
    * 生成结构化的修复指令，用于拼接到代码生成上下文

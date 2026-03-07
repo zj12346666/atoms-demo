@@ -16,7 +16,7 @@ export { WebContainerCompatibilitySkill } from './webcontainer-compatibility-ski
 export type { CompatibilityIssue, CompatibilityReport } from './webcontainer-compatibility-skill';
 
 export { CodeReviewSkill } from './code-review-skill';
-export type { ReviewIssue, ReviewReport } from './code-review-skill';
+export type { ReviewIssue, ReviewReport, FileStructureIssue, ArchInfoForReview } from './code-review-skill';
 
 export { PersistenceSkill } from './persistence-skill';
 export type { PersistenceResult } from './persistence-skill';

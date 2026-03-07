@@ -70,25 +70,23 @@ export class WebContainerHotReload {
   }
 
   /**
-   * 加载 package.json 状态（通过 API）
+   * 加载 package.json 状态（直接从 WebContainer 文件系统读取，不走 API）
    */
   private async loadPackageJsonState(): Promise<void> {
-    if (!this.sessionId) return;
+    if (!this.webcontainer) return;
 
     try {
-      const response = await fetch(`/api/files?sessionId=${this.sessionId}&path=package.json`);
-      const data = await response.json();
-      
-      if (data.success && data.file?.content) {
-        const hash = this.computeHash(data.file.content);
-        this.packageJsonState = {
-          hash,
-          content: data.file.content,
-        };
-        console.log(`📦 [HotReload] 已加载 package.json 状态 (hash: ${hash.substring(0, 8)}...)`);
-      }
+      // 直接从已挂载的 WebContainer 文件系统读取，避免 API 404
+      const content = await this.webcontainer.fs.readFile('package.json', 'utf-8');
+      const hash = this.computeHash(content);
+      this.packageJsonState = {
+        hash,
+        content,
+      };
+      console.log(`📦 [HotReload] 已加载 package.json 状态 (hash: ${hash.substring(0, 8)}...)`);
     } catch (error) {
-      console.warn('⚠️ [HotReload] 无法加载 package.json，可能是新项目:', error);
+      // 文件系统中不存在 package.json 也正常（项目初始化中）
+      console.warn('⚠️ [HotReload] WebContainer 中暂无 package.json，可能是新项目:', error);
     }
   }
 
@@ -266,21 +264,34 @@ export class WebContainerHotReload {
       })
     );
 
-    // 构建文件系统映射
-    const fileSystem: Record<string, { file: { contents: string } }> = {};
+    // 构建扁平文件映射（key 为完整路径）
+    const flatFiles: Record<string, string> = {};
     for (const file of filesWithContent) {
       if (file.content) {
         const normalizedPath = file.path.startsWith('/') ? file.path.slice(1) : file.path;
-        fileSystem[normalizedPath] = {
-          file: {
-            contents: file.content,
-          },
-        };
+        flatFiles[normalizedPath] = file.content;
       }
     }
 
-    // 挂载文件系统（这会替换所有文件）
-    await this.webcontainer.mount(fileSystem);
+    // 将扁平路径转换为 WebContainer 需要的嵌套目录树
+    // 直接用扁平 key 调用 mount() 会触发 EIO: invalid file name 错误
+    const buildNestedTree = (flat: Record<string, string>) => {
+      const tree: Record<string, any> = {};
+      for (const [filePath, content] of Object.entries(flat)) {
+        const parts = filePath.split('/');
+        let current = tree;
+        for (let i = 0; i < parts.length - 1; i++) {
+          const dir = parts[i];
+          if (!current[dir]) current[dir] = { directory: {} };
+          current = current[dir].directory;
+        }
+        current[parts[parts.length - 1]] = { file: { contents: content } };
+      }
+      return tree;
+    };
+
+    // 挂载嵌套文件树（这会替换所有文件）
+    await this.webcontainer.mount(buildNestedTree(flatFiles));
     console.log(`✅ [HotReload] 全量同步完成，共 ${filesWithContent.length} 个文件`);
 
     // 重新加载 package.json 状态

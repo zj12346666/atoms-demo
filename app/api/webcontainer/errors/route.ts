@@ -59,7 +59,7 @@ ${errorMessages}
 4. 依赖项已正确安装`;
 
     // 发送进度通知
-    webSocketManager.emitWorkflowProgress({
+    const emitPromise1 = webSocketManager.emitWorkflowProgress({
       type: 'WORKFLOW_PROGRESS',
       sessionId,
       state: 'fixing',
@@ -67,6 +67,9 @@ ${errorMessages}
       progress: 50,
       details: `发现 ${errors.length} 个错误，正在使用 AI 修复`,
     });
+    if (emitPromise1 && typeof emitPromise1.catch === 'function') {
+      emitPromise1.catch(err => logger.warn('Failed to emit workflow progress:', err));
+    }
 
     // 初始化VIPWorkflowManager（需要 apiKey 和 baseURL）
     const workflowManager = new VIPWorkflowManager(
@@ -81,7 +84,7 @@ ${errorMessages}
       session.projectId,
       (progress) => {
         // 实时推送进度
-        webSocketManager.emitWorkflowProgress({
+        const emitPromise = webSocketManager.emitWorkflowProgress({
           type: 'WORKFLOW_PROGRESS',
           sessionId,
           state: progress.state as any,
@@ -89,6 +92,9 @@ ${errorMessages}
           progress: progress.progress,
           details: progress.details,
         });
+        if (emitPromise && typeof emitPromise.catch === 'function') {
+          emitPromise.catch(err => logger.warn('Failed to emit workflow progress:', err));
+        }
       }
     );
 
@@ -106,7 +112,10 @@ ${errorMessages}
           content: fc.action !== 'DELETE' ? fc.code : undefined,
         }));
 
-        webSocketManager.emitFileUpdates(events);
+        const emitPromise = webSocketManager.emitFileUpdates(events);
+        if (emitPromise && typeof emitPromise.catch === 'function') {
+          emitPromise.catch(err => logger.warn('Failed to emit file updates:', err));
+        }
       }
 
       return NextResponse.json({

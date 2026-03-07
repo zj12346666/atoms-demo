@@ -15,12 +15,29 @@ export interface ReviewIssue {
   suggestion?: string;
 }
 
+export interface FileStructureIssue {
+  severity: 'high' | 'medium' | 'low';
+  message: string;
+  suggestion: string;
+}
+
+export interface ArchInfoForReview {
+  type: string;       // e.g. 'react-ts'
+  label: string;      // e.g. 'React + TypeScript + Vite'
+  description: string;
+  requiredFiles: string[];
+  forbiddenExtensions?: string[]; // e.g. ['.vue'] for react-ts
+  codeGenInstructions: string;
+}
+
 export interface ReviewReport {
   needsRevision: boolean; // 是否需要修改
   score: number; // 代码质量评分 0-100
   issues: ReviewIssue[];
   summary: string;
   suggestions: string[]; // 总体改进建议
+  fileStructureIssues: FileStructureIssue[]; // 文件结构检查结果
+  architecture?: string; // 检测到的架构名称
 }
 
 export class CodeReviewSkill {
@@ -34,41 +51,114 @@ export class CodeReviewSkill {
   }
 
   /**
+   * 静态文件结构检查（无需 LLM，基于架构规范快速校验）
+   */
+  static checkFileStructure(
+    fileList: string[],
+    archInfo: ArchInfoForReview
+  ): FileStructureIssue[] {
+    const issues: FileStructureIssue[] = [];
+
+    // 1. 检查必需文件是否存在
+    for (const required of archInfo.requiredFiles) {
+      if (!fileList.includes(required)) {
+        issues.push({
+          severity: 'high',
+          message: `缺少必需文件: ${required}`,
+          suggestion: `${archInfo.label} 架构必须包含 ${required} 作为入口文件`,
+        });
+      }
+    }
+
+    // 2. 检查是否包含禁止的文件扩展名（架构冲突）
+    if (archInfo.forbiddenExtensions && archInfo.forbiddenExtensions.length > 0) {
+      for (const ext of archInfo.forbiddenExtensions) {
+        const conflictFiles = fileList.filter(f => f.endsWith(ext));
+        if (conflictFiles.length > 0) {
+          issues.push({
+            severity: 'medium',
+            message: `${archInfo.label} 项目中发现不匹配的文件: ${conflictFiles.join(', ')}`,
+            suggestion: `当前架构为 ${archInfo.label}，不应包含 ${ext} 文件，请确认架构选择`,
+          });
+        }
+      }
+    }
+
+    return issues;
+  }
+
+  /**
    * 审查代码质量
    * 对暂存的代码进行审查，检查代码逻辑、最佳实践、可维护性等
-   * 
+   * 同时进行静态文件结构校验（基于架构规范）
+   *
    * @param stagedFiles 暂存的文件系统（从 MultiFileEngineeringSkill 获取）
    * @param originalPrompt 原始用户需求
    * @param plan 代码生成计划
+   * @param archInfo 检测到的前端架构信息（用于文件结构检查）
    * @returns 审查报告
    */
   async reviewCode(
     stagedFiles: Map<string, string>,
     originalPrompt: string,
-    plan?: string
+    plan?: string,
+    archInfo?: ArchInfoForReview
   ): Promise<ReviewReport> {
     try {
-      logger.info(`🔍 开始审查 ${stagedFiles.size} 个文件...`);
+      const fileList = Array.from(stagedFiles.keys());
+      logger.info(`🔍 开始审查 ${stagedFiles.size} 个文件... 架构: ${archInfo?.label ?? '未指定'}`);
 
-      // 构建文件内容上下文（限制长度）
+      // ── 1. 静态文件结构检查 ──────────────────────────────────────
+      const fileStructureIssues: FileStructureIssue[] = archInfo
+        ? CodeReviewSkill.checkFileStructure(fileList, archInfo)
+        : [];
+
+      if (fileStructureIssues.length > 0) {
+        logger.warn(
+          `⚠️ 文件结构检查发现 ${fileStructureIssues.length} 个问题:\n` +
+          fileStructureIssues.map(i => `  [${i.severity}] ${i.message}`).join('\n')
+        );
+      } else if (archInfo) {
+        logger.info('✅ 文件结构检查通过');
+      }
+
+      // ── 2. 构建文件内容上下文（限制长度）────────────────────────
       const filesContext = Array.from(stagedFiles.entries())
         .map(([path, content]) => {
-          // 限制每个文件最多显示2000字符
-          const preview = content.length > 2000 
+          const preview = content.length > 2000
             ? content.substring(0, 2000) + '\n... (文件过长，已截断)'
             : content;
           return `文件: ${path}\n\`\`\`\n${preview}\n\`\`\``;
         })
         .join('\n\n');
 
-      const systemPrompt = `你是一个专业的代码审查专家。请对生成的代码进行质量审查。
+      // ── 3. 构建架构上下文（注入到 LLM 系统提示）──────────────────
+      const archContext = archInfo
+        ? `
+**当前项目架构：${archInfo.label}**
+${archInfo.description}
 
+**文件结构校验结果：**
+当前文件列表：${fileList.join(', ')}
+必需文件：${archInfo.requiredFiles.join(', ')}
+${fileStructureIssues.length > 0
+  ? `⚠️ 结构问题：\n${fileStructureIssues.map(i => `  - [${i.severity}] ${i.message}`).join('\n')}`
+  : '✅ 必需文件完整'}
+
+**架构规范：**
+${archInfo.codeGenInstructions}
+`
+        : '';
+
+      const systemPrompt = `你是一个专业的代码审查专家。请对生成的代码进行质量审查。
+${archContext}
 **审查重点：**
 1. **逻辑正确性**：代码是否实现了用户需求，逻辑是否正确
-2. **最佳实践**：是否符合 TypeScript/React 最佳实践
-3. **代码质量**：可读性、可维护性、性能
-4. **安全性**：是否有潜在的安全问题
-5. **完整性**：是否完整实现了需求，是否有遗漏
+2. **架构一致性**：代码是否遵循上述架构规范（命名规范、文件组织、API 使用方式）
+3. **最佳实践**：是否符合该技术栈的最佳实践
+4. **代码质量**：可读性、可维护性、性能
+5. **安全性**：是否有潜在的安全问题
+6. **完整性**：是否完整实现了需求，是否有遗漏
 
 **输出格式（严格使用JSON）：**
 \`\`\`json
@@ -108,7 +198,7 @@ ${filesContext}
 请进行代码审查，重点关注：
 1. 代码是否完整实现了用户需求
 2. 是否有逻辑错误或潜在bug
-3. 是否符合最佳实践
+3. 是否遵循 ${archInfo?.label ?? '前端'} 最佳实践
 4. 是否有性能或安全问题`;
 
       const response = await this.client.chat.completions.create({
@@ -133,17 +223,22 @@ ${filesContext}
 
       const reviewData = JSON.parse(jsonMatch[1] || jsonMatch[0]);
 
+      // 如果文件结构有 high-severity 问题，强制 needsRevision = true
+      const hasHighStructureIssue = fileStructureIssues.some(i => i.severity === 'high');
+
       const report: ReviewReport = {
-        needsRevision: reviewData.needsRevision || false,
+        needsRevision: reviewData.needsRevision || hasHighStructureIssue || false,
         score: reviewData.score || 0,
         issues: reviewData.issues || [],
         summary: reviewData.summary || '审查完成',
         suggestions: reviewData.suggestions || [],
+        fileStructureIssues,
+        architecture: archInfo?.label,
       };
 
-      logger.info(`✅ 代码审查完成: ${report.summary} (评分: ${report.score})`);
+      logger.info(`✅ 代码审查完成: ${report.summary} (评分: ${report.score}, 架构: ${report.architecture ?? '未指定'})`);
       if (report.needsRevision) {
-        logger.warn(`⚠️ 需要修改: 发现 ${report.issues.length} 个问题`);
+        logger.warn(`⚠️ 需要修改: ${report.issues.length} 个质量问题, ${fileStructureIssues.length} 个文件结构问题`);
       }
 
       return report;
@@ -155,6 +250,7 @@ ${filesContext}
         issues: [],
         summary: `审查过程出错: ${error.message}`,
         suggestions: [],
+        fileStructureIssues: [],
       };
     }
   }

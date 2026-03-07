@@ -1,10 +1,31 @@
 /**
  * WebSocket Manager - 共享实例（用于 server.js 和 API 路由）
  * 这个文件确保 server.js 和 API 路由使用同一个 WebSocketManager 实例
+ * 
+ * 支持两种模式：
+ * 1. WebSocket (Socket.IO) - 本地开发/自托管
+ * 2. SSE (Server-Sent Events) - Vercel 部署
  */
 
 import { Server as SocketIOServer } from 'socket.io';
 import { logger } from './logger';
+
+// 动态导入 SSE 函数（避免循环依赖）
+let sendSSEEvent: ((sessionId: string, event: any) => boolean) | null = null;
+
+// 延迟加载 SSE 模块（仅在需要时）
+async function getSSESender() {
+  if (!sendSSEEvent) {
+    try {
+      const sseModule = await import('./sse-manager');
+      sendSSEEvent = sseModule.sendSSEEvent;
+    } catch (error) {
+      logger.warn('⚠️ 无法加载 SSE 模块:', error);
+      return null;
+    }
+  }
+  return sendSSEEvent;
+}
 
 export interface FileUpdateEvent {
   type: 'FILE_UPDATED' | 'FILE_CREATED' | 'FILE_DELETED';
@@ -22,10 +43,15 @@ export interface WorkflowProgressEvent {
   details?: string;
 }
 
+// 版本号：每次修改 emit 逻辑时递增，强制热重载后重建实例
+const MANAGER_VERSION = 'sse-only-v1';
+
 // 全局单例（在 Node.js 进程中共享）
 declare global {
   // eslint-disable-next-line no-var
   var __websocketManager: WebSocketManager | undefined;
+  // eslint-disable-next-line no-var
+  var __websocketManagerVersion: string | undefined;
 }
 
 export class WebSocketManager {
@@ -35,9 +61,12 @@ export class WebSocketManager {
 
   static getInstance(): WebSocketManager {
     // 在开发环境中，使用全局变量避免热重载时创建新实例
+    // 但若版本号不匹配（代码有改动），强制重建
     if (process.env.NODE_ENV === 'development') {
-      if (!global.__websocketManager) {
+      if (!global.__websocketManager || global.__websocketManagerVersion !== MANAGER_VERSION) {
         global.__websocketManager = new WebSocketManager();
+        global.__websocketManagerVersion = MANAGER_VERSION;
+        logger.info(`🔄 WebSocketManager 实例已重建 (version: ${MANAGER_VERSION})`);
       }
       return global.__websocketManager;
     }
@@ -93,29 +122,31 @@ export class WebSocketManager {
   }
 
   /**
-   * 发送文件更新事件
+   * 发送文件更新事件（强制 SSE 模式）
    */
-  emitFileUpdate(event: FileUpdateEvent): void {
-    if (!this.io) {
-      logger.warn('⚠️ WebSocket服务器未初始化，跳过文件更新通知');
-      return;
+  async emitFileUpdate(event: FileUpdateEvent): Promise<void> {
+    const sseSender = await getSSESender();
+    if (sseSender) {
+      const sent = sseSender(event.sessionId, { type: 'file_update', ...event });
+      if (sent) {
+        logger.info(`📤 [SSE] 发送文件更新到 session:${event.sessionId}: ${event.type} ${event.path}`);
+        return;
+      }
     }
-
-    const room = `session:${event.sessionId}`;
-    this.io.to(room).emit('file_update', event);
-    logger.info(`📤 发送文件更新事件到 ${room}: ${event.type} ${event.path}`);
+    logger.warn(`⚠️ [SSE] 无活跃连接 (session:${event.sessionId})，跳过文件更新通知`);
   }
 
   /**
-   * 批量发送文件更新事件
+   * 批量发送文件更新事件（强制 SSE 模式）
    */
-  emitFileUpdates(events: FileUpdateEvent[]): void {
-    if (!this.io) {
-      logger.warn('⚠️ WebSocket服务器未初始化，跳过文件更新通知');
+  async emitFileUpdates(events: FileUpdateEvent[]): Promise<void> {
+    const sseSender = await getSSESender();
+    if (!sseSender) {
+      logger.warn('⚠️ [SSE] 无法加载 SSE 模块，跳过文件更新通知');
       return;
     }
 
-    // 按sessionId分组
+    // 按 sessionId 分组
     const eventsBySession = new Map<string, FileUpdateEvent[]>();
     for (const event of events) {
       if (!eventsBySession.has(event.sessionId)) {
@@ -124,38 +155,42 @@ export class WebSocketManager {
       eventsBySession.get(event.sessionId)!.push(event);
     }
 
-    // 发送到对应的房间
     for (const [sessionId, sessionEvents] of eventsBySession.entries()) {
-      const room = `session:${sessionId}`;
-      this.io.to(room).emit('file_updates', sessionEvents);
-      logger.info(`📤 批量发送 ${sessionEvents.length} 个文件更新事件到 ${room}`);
+      const sent = sseSender(sessionId, { type: 'file_updates', events: sessionEvents });
+      if (sent) {
+        logger.info(`📤 [SSE] 批量发送 ${sessionEvents.length} 个文件更新到 session:${sessionId}`);
+      } else {
+        logger.warn(`⚠️ [SSE] 无活跃连接 (session:${sessionId})，跳过批量文件更新`);
+      }
     }
   }
 
   /**
-   * 发送工作流进度事件
+   * 发送工作流进度事件（强制 SSE 模式）
    */
-  emitWorkflowProgress(event: WorkflowProgressEvent): void {
-    if (!this.io) {
-      logger.warn('⚠️ WebSocket服务器未初始化，跳过进度通知');
-      return;
+  async emitWorkflowProgress(event: WorkflowProgressEvent): Promise<void> {
+    const sseSender = await getSSESender();
+    if (sseSender) {
+      const sent = sseSender(event.sessionId, { type: 'workflow_progress', ...event });
+      if (sent) {
+        logger.info(`📊 [SSE] → session:${event.sessionId}: [${event.state}] ${event.message} (${event.progress}%)`);
+        return;
+      }
     }
-
-    const room = `session:${event.sessionId}`;
-    this.io.to(room).emit('workflow_progress', event);
-    logger.debug(`📊 发送工作流进度到 ${room}: [${event.state}] ${event.message} (${event.progress}%)`);
+    logger.warn(`⚠️ [SSE] 无活跃连接 (session:${event.sessionId})，跳过进度通知`);
   }
 
   /**
-   * 批量发送工作流进度事件
+   * 批量发送工作流进度事件（强制 SSE 模式）
    */
-  emitWorkflowProgresses(events: WorkflowProgressEvent[]): void {
-    if (!this.io) {
-      logger.warn('⚠️ WebSocket服务器未初始化，跳过进度通知');
+  async emitWorkflowProgresses(events: WorkflowProgressEvent[]): Promise<void> {
+    const sseSender = await getSSESender();
+    if (!sseSender) {
+      logger.warn('⚠️ [SSE] 无法加载 SSE 模块，跳过进度通知');
       return;
     }
 
-    // 按sessionId分组
+    // 按 sessionId 分组
     const eventsBySession = new Map<string, WorkflowProgressEvent[]>();
     for (const event of events) {
       if (!eventsBySession.has(event.sessionId)) {
@@ -164,11 +199,13 @@ export class WebSocketManager {
       eventsBySession.get(event.sessionId)!.push(event);
     }
 
-    // 发送到对应的房间
     for (const [sessionId, sessionEvents] of eventsBySession.entries()) {
-      const room = `session:${sessionId}`;
-      this.io.to(room).emit('workflow_progresses', sessionEvents);
-      logger.info(`📊 批量发送 ${sessionEvents.length} 个进度事件到 ${room}`);
+      const sent = sseSender(sessionId, { type: 'workflow_progresses', events: sessionEvents });
+      if (sent) {
+        logger.info(`📊 [SSE] 批量发送 ${sessionEvents.length} 个进度事件到 session:${sessionId}`);
+      } else {
+        logger.warn(`⚠️ [SSE] 无活跃连接 (session:${sessionId})，跳过批量进度通知`);
+      }
     }
   }
 }

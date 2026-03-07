@@ -296,7 +296,7 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
           };
         } else {
           // 从分离的文件构建 index.html
-          const htmlContent = htmlFile?.content || '<div id="app"></div>';
+          const htmlContent = htmlFile?.content || '<div id="root"></div>';
           const cssPath = cssFile ? (cssFile.path.startsWith('/') ? cssFile.path.slice(1) : cssFile.path) : null;
           
           // 对于 React 项目，使用标准的入口文件
@@ -358,6 +358,9 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
             .join('');
         };
 
+        // 不应该被 PascalCase 转换的特殊入口文件名（这些文件名应保持小写）
+        const ENTRY_FILE_NAMES = new Set(['main', 'index', 'vite.config', 'app.config']);
+
         // 先收集所有需要创建的目录
         const directories = new Set<string>();
         
@@ -372,8 +375,12 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
               continue;
             }
             
-            // 跳过根目录的 index.html，因为我们已经处理过了
-            if (normalizedPath === 'index.html') {
+            // 跳过根目录的 index.html、package.json、vite.config.*，因为我们已经处理过了
+            if (normalizedPath === 'index.html' ||
+                normalizedPath === 'package.json' ||
+                normalizedPath === 'vite.config.js' ||
+                normalizedPath === 'vite.config.ts' ||
+                normalizedPath === 'vite.config.mts') {
               continue;
             }
             
@@ -404,8 +411,12 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
               continue;
             }
             
-            // 跳过根目录的 index.html，因为我们已经处理过了
-            if (normalizedPath === 'index.html') {
+            // 跳过根目录的 index.html、package.json、vite.config.*，因为我们已经处理过了
+            if (normalizedPath === 'index.html' ||
+                normalizedPath === 'package.json' ||
+                normalizedPath === 'vite.config.js' ||
+                normalizedPath === 'vite.config.ts' ||
+                normalizedPath === 'vite.config.mts') {
               continue;
             }
             
@@ -495,7 +506,8 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
             
             // 2. 如果没有找到导入引用，检查文件名是否应该是驼峰命名（React组件文件）
             // 对于全小写的 React 组件文件，强制转换为驼峰命名（WebContainer 对大小写敏感）
-            if (!foundCorrectCase && fileName.match(/^[a-z]+\.(tsx?|jsx?)$/)) {
+            // 注意：main、index 等入口文件名不应被转换
+            if (!foundCorrectCase && fileName.match(/^[a-z]+\.(tsx?|jsx?)$/) && !ENTRY_FILE_NAMES.has(fileNameWithoutExt)) {
               // 对于全小写的 React 组件文件，强制转换为驼峰命名
               const pascalCaseName = toPascalCase(fileNameWithoutExt);
               if (pascalCaseName !== fileNameWithoutExt) {
@@ -618,57 +630,81 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
               );
             });
             
+            // 查找 App 文件，或回退到任意 .tsx/.jsx 文件
+            let targetFile = appFile;
+            let targetFileName = 'App';
+            let targetImportPath = './App';
+
             if (appFile) {
               const appPath = normalizePath(appFile.path);
               if (appPath) {
-                // 提取文件名（不含扩展名）
-                const appFileName = appPath.split('/').pop()?.replace(/\.(tsx|jsx)$/i, '') || 'App';
-                // 确定导入路径 - 相对于 src/main.tsx
-                let importPath: string;
+                targetFileName = appPath.split('/').pop()?.replace(/\.(tsx|jsx)$/i, '') || 'App';
                 if (appPath === 'src/App.tsx' || appPath === 'src/App.jsx') {
-                  importPath = './App';
+                  targetImportPath = './App';
                 } else if (appPath.startsWith('src/')) {
-                  // 移除 src/ 前缀，保留相对路径
-                  importPath = './' + appPath.replace(/^src\//, '').replace(/\.(tsx|jsx)$/i, '');
+                  targetImportPath = './' + appPath.replace(/^src\//, '').replace(/\.(tsx|jsx)$/i, '');
                 } else {
-                  importPath = './' + appFileName;
-                }
-                
-                // 创建入口文件内容（确保内容格式正确）
-                const mainContent = [
-                  `import React from 'react';`,
-                  `import ReactDOM from 'react-dom/client';`,
-                  `import ${appFileName} from '${importPath}';`,
-                  ``,
-                  `ReactDOM.createRoot(document.getElementById('app')!).render(`,
-                  `  <React.StrictMode>`,
-                  `    <${appFileName} />`,
-                  `  </React.StrictMode>`,
-                  `);`
-                ].join('\n');
-                
-                // 检查是否与目录冲突
-                if (fileSystem[normalizedMainPath]) {
-                  if ('directory' in fileSystem[normalizedMainPath]) {
-                    console.error(`❌ [WebContainer] 无法创建文件 ${normalizedMainPath}，因为该路径已存在目录`);
-                  } else {
-                    console.log(`ℹ️ [WebContainer] ${normalizedMainPath} 已存在，跳过创建`);
-                  }
-                } else {
-                  // 验证文件内容是否有效
-                  if (mainContent && mainContent.length > 0 && !mainContent.includes('\0')) {
-                    fileSystem[normalizedMainPath] = {
-                      file: {
-                        contents: mainContent
-                      }
-                    };
-                    console.log(`📄 [WebContainer] 创建 React 入口文件: ${normalizedMainPath} (导入 ${appFileName} from ${importPath})`);
-                    console.log(`📝 [WebContainer] 文件内容预览:`, mainContent.substring(0, 100) + '...');
-                  } else {
-                    console.error(`❌ [WebContainer] 文件内容无效: ${normalizedMainPath}`);
-                  }
+                  targetImportPath = '../' + targetFileName;
                 }
               }
+            } else {
+              // 没有找到 App 文件，尝试找任意 .tsx/.jsx 文件作为入口
+              const anyTsxFile = filesWithContent.find((f: any) => {
+                const normalized = normalizePath(f.path);
+                return normalized && (normalized.endsWith('.tsx') || normalized.endsWith('.jsx'));
+              });
+              if (anyTsxFile) {
+                const anyPath = normalizePath(anyTsxFile.path);
+                if (anyPath) {
+                  targetFileName = anyPath.split('/').pop()?.replace(/\.(tsx|jsx)$/i, '') || 'App';
+                  if (anyPath.startsWith('src/')) {
+                    targetImportPath = './' + anyPath.replace(/^src\//, '').replace(/\.(tsx|jsx)$/i, '');
+                  } else {
+                    targetImportPath = '../' + targetFileName;
+                  }
+                  targetFile = anyTsxFile;
+                  console.warn(`⚠️ [WebContainer] 未找到 App 文件，使用 ${anyPath} 作为回退入口`);
+                }
+              }
+            }
+
+            if (targetFile) {
+              // 创建入口文件内容（确保内容格式正确）
+              const mainContent = [
+                `import React from 'react';`,
+                `import ReactDOM from 'react-dom/client';`,
+                `import ${targetFileName} from '${targetImportPath}';`,
+                ``,
+                `ReactDOM.createRoot(document.getElementById('root')!).render(`,
+                `  <React.StrictMode>`,
+                `    <${targetFileName} />`,
+                `  </React.StrictMode>`,
+                `);`
+              ].join('\n');
+              
+              // 检查是否与目录冲突
+              if (fileSystem[normalizedMainPath]) {
+                if ('directory' in fileSystem[normalizedMainPath]) {
+                  console.error(`❌ [WebContainer] 无法创建文件 ${normalizedMainPath}，因为该路径已存在目录`);
+                } else {
+                  console.log(`ℹ️ [WebContainer] ${normalizedMainPath} 已存在，跳过创建`);
+                }
+              } else {
+                // 验证文件内容是否有效
+                if (mainContent && mainContent.length > 0 && !mainContent.includes('\0')) {
+                  fileSystem[normalizedMainPath] = {
+                    file: {
+                      contents: mainContent
+                    }
+                  };
+                  console.log(`📄 [WebContainer] 创建 React 入口文件: ${normalizedMainPath} (导入 ${targetFileName} from ${targetImportPath})`);
+                  console.log(`📝 [WebContainer] 文件内容预览:`, mainContent.substring(0, 100) + '...');
+                } else {
+                  console.error(`❌ [WebContainer] 文件内容无效: ${normalizedMainPath}`);
+                }
+              }
+            } else {
+              console.warn(`⚠️ [WebContainer] 未找到任何可用的组件文件，无法创建 ${normalizedMainPath}`);
             }
           } else if (!normalizedMainPath) {
             console.warn('⚠️ [WebContainer] 无法规范化 src/main.tsx 路径');
@@ -676,6 +712,30 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
             console.log('ℹ️ [WebContainer] src/main.tsx 已存在，跳过创建');
           }
         }
+
+        // 辅助函数：将扁平文件结构（key 为完整路径）转换为 WebContainer 需要的嵌套树结构
+        // WebContainer mount() 不接受 key 包含斜杠的扁平对象，必须转换为嵌套目录树
+        const buildNestedFileTree = (flatFiles: Record<string, { file: { contents: string } }>) => {
+          const tree: Record<string, any> = {};
+          for (const [filePath, fileEntry] of Object.entries(flatFiles)) {
+            const parts = filePath.split('/');
+            let current = tree;
+            for (let i = 0; i < parts.length - 1; i++) {
+              const dirName = parts[i];
+              if (!current[dirName]) {
+                current[dirName] = { directory: {} };
+              } else if (!('directory' in current[dirName])) {
+                // 路径冲突（文件与目录同名），跳过
+                console.error(`❌ [WebContainer] 路径冲突: ${parts.slice(0, i + 1).join('/')} 既是文件又是目录`);
+                break;
+              }
+              current = current[dirName].directory;
+            }
+            const fileName = parts[parts.length - 1];
+            current[fileName] = fileEntry;
+          }
+          return tree;
+        };
 
         // 4. 挂载前最终检查和修复文件名大小写
         console.log('💾 [WebContainer] 挂载文件系统，文件数量:', Object.keys(fileSystem).length);
@@ -692,8 +752,10 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
             const fileName = pathParts[pathParts.length - 1];
             
             // 检查是否是全小写的 React 组件文件（这会导致 WebContainer 挂载失败）
-            if (fileName.match(/^[a-z]+\.(tsx?|jsx?)$/)) {
-              const fileNameWithoutExt = fileName.replace(/\.[^.]*$/, '');
+            // 注意：main、index 等入口文件名不应被转换
+            const fileNameWithoutExtCheck = fileName.replace(/\.[^.]*$/, '');
+            if (fileName.match(/^[a-z]+\.(tsx?|jsx?)$/) && !ENTRY_FILE_NAMES.has(fileNameWithoutExtCheck)) {
+              const fileNameWithoutExt = fileNameWithoutExtCheck;
               const fileExt = fileName.match(/\.[^.]*$/)?.[0] || '';
               const pascalCaseName = toPascalCase(fileNameWithoutExt);
               
@@ -727,8 +789,10 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
           const fileName = pathParts[pathParts.length - 1];
           
           // 检查是否是全小写的 React 组件文件（这会导致 WebContainer 挂载失败）
-          if (fileName.match(/^[a-z]+\.(tsx?|jsx?)$/)) {
-            const fileNameWithoutExt = fileName.replace(/\.[^.]*$/, '');
+          // 注意：main、index 等入口文件名不应被转换
+          const fileNameWithoutExtPass2 = fileName.replace(/\.[^.]*$/, '');
+          if (fileName.match(/^[a-z]+\.(tsx?|jsx?)$/) && !ENTRY_FILE_NAMES.has(fileNameWithoutExtPass2)) {
+            const fileNameWithoutExt = fileNameWithoutExtPass2;
             const fileExt = fileName.match(/\.[^.]*$/)?.[0] || '';
             const pascalCaseName = toPascalCase(fileNameWithoutExt);
             
@@ -980,7 +1044,10 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
         }
         
         try {
-          await webcontainer.mount(fileSystem);
+          // 将扁平路径结构转换为 WebContainer 需要的嵌套目录树，避免 EIO: invalid file name 错误
+          const nestedFileTree = buildNestedFileTree(fileSystem);
+          console.log('🌳 [WebContainer] 嵌套文件树根节点:', Object.keys(nestedFileTree).sort());
+          await webcontainer.mount(nestedFileTree);
           if (!mounted) return;
           console.log('✅ [WebContainer] 文件系统挂载成功');
         } catch (mountError: any) {
@@ -1144,26 +1211,9 @@ export function WebContainerPreview({ sessionId }: WebContainerPreviewProps) {
           }
         });
         
-        // 监听 dev 进程输出
+        // 监听 dev 进程输出（healer 内部会 pipeTo，stream 只能被 pipe 一次）
+        // URL 检测通过下方的 server-ready 事件完成，无需再次 pipeTo
         await webContainerHealer.monitorDevProcess(devProcess);
-        
-        // 同时保留原有的输出监听（用于 URL 检测）
-        devProcess.output.pipeTo(
-          new WritableStream({
-            write(data) {
-              console.log('🚀 [WebContainer Dev Server]', data);
-              
-              // 检测服务器启动
-              if (data.includes('Local:') || data.includes('localhost') || data.includes('http://')) {
-                const match = data.match(/https?:\/\/[^\s]+/);
-                if (match) {
-                  console.log('✅ [WebContainer] 检测到服务器 URL:', match[0]);
-                  setUrl(match[0]);
-                }
-              }
-            }
-          })
-        );
 
         // 等待服务器就绪
         let urlSet = false;

@@ -9,22 +9,10 @@ import { SessionManager } from '@/lib/session-manager';
 import { WebSocketManager } from '@/lib/websocket-manager';
 import { logger } from '@/lib/logger';
 import { ensureConnection, isDatabaseAvailable } from '@/lib/db';
-import { Server as SocketIOServer } from 'socket.io';
 
 const sessionManager = new SessionManager();
 const wsManager = WebSocketManager.getInstance();
-
-// 尝试从全局获取 Socket.IO 实例（由 server.js 设置）
-if (typeof global !== 'undefined' && (global as any).__socketIO) {
-  const socketIO = (global as any).__socketIO;
-  // 直接调用 setIO 方法（如果存在）
-  if (wsManager && typeof (wsManager as any).setIO === 'function') {
-    (wsManager as any).setIO(socketIO);
-    logger.info('✅ WebSocketManager 已连接到 Socket.IO 服务器');
-  } else {
-    logger.warn('⚠️ WebSocketManager.setIO 方法不可用');
-  }
-}
+// 注意：不再注入 Socket.IO，统一使用 SSE 模式推送进度
 
 export async function POST(req: NextRequest) {
   try {
@@ -34,7 +22,7 @@ export async function POST(req: NextRequest) {
       logger.warn('⚠️ 数据库不可用，但继续执行（将使用降级模式）');
     }
 
-    const { prompt, sessionId, userId } = await req.json();
+    const { prompt, sessionId, userId, requestId } = await req.json();
 
     if (!prompt) {
       return NextResponse.json(
@@ -53,6 +41,7 @@ export async function POST(req: NextRequest) {
     logger.info('🚀 VIP Code Agent 开始工作流...');
     logger.info('📝 用户输入:', prompt);
     logger.info('🔑 Session ID:', sessionId || '未提供');
+    logger.info('📡 Request ID (SSE channel):', requestId || '未提供');
 
     // 确保数据库连接
     await ensureConnection();
@@ -89,6 +78,10 @@ export async function POST(req: NextRequest) {
     const { agentPromptInjector } = await import('@/lib/agent-prompt-injector');
     const enhancedPrompt = await agentPromptInjector.enhancePrompt(actualSessionId, prompt);
 
+    // SSE 推送频道：优先使用 requestId（客户端提前订阅的频道），否则用 actualSessionId
+    const sseChannelId = requestId || actualSessionId;
+    logger.info(`📡 SSE 进度推送频道: ${sseChannelId}`);
+
     // 执行工作流（实时推送进度到WebSocket）
     const result = await workflow.execute(
       enhancedPrompt,
@@ -101,15 +94,18 @@ export async function POST(req: NextRequest) {
           logger.info(`💭 ${progress.details}`);
         }
         
-        // 实时推送进度到WebSocket
-        wsManager.emitWorkflowProgress({
+        // 实时推送进度到 SSE 频道（用 requestId 保证客户端能收到）
+        const emitPromise = wsManager.emitWorkflowProgress({
           type: 'WORKFLOW_PROGRESS',
-          sessionId: actualSessionId,
+          sessionId: sseChannelId,  // ← 推到 requestId 频道
           state: progress.state,
           message: progress.message,
           progress: progress.progress,
           details: progress.details,
         });
+        if (emitPromise && typeof emitPromise.catch === 'function') {
+          emitPromise.catch(err => logger.warn('Failed to emit workflow progress:', err));
+        }
       }
     );
 
@@ -119,12 +115,15 @@ export async function POST(req: NextRequest) {
         type: fc.action === 'CREATE' ? 'FILE_CREATED' as const :
               fc.action === 'DELETE' ? 'FILE_DELETED' as const :
               'FILE_UPDATED' as const,
-        sessionId: actualSessionId,
+        sessionId: sseChannelId,  // ← 同样推到 requestId 频道
         path: fc.path,
         content: fc.action !== 'DELETE' ? fc.code : undefined,
       }));
 
-      wsManager.emitFileUpdates(events);
+      const emitPromise = wsManager.emitFileUpdates(events);
+      if (emitPromise && typeof emitPromise.catch === 'function') {
+        emitPromise.catch(err => logger.warn('Failed to emit file updates:', err));
+      }
     }
 
     // 添加AI响应

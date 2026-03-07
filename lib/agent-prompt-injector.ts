@@ -27,26 +27,43 @@ export class AgentPromptInjector {
     const context: ProjectContext = {};
 
     try {
+      if (!this.fileManager) {
+        logger.warn('⚠️ [PromptInjector] fileManager 未初始化');
+        return context;
+      }
+
       // 获取 package.json
-      const packageJsonFile = await this.fileManager.getFile(sessionId, 'package.json');
-      if (packageJsonFile?.content) {
-        context.packageJson = packageJsonFile.content;
+      try {
+        const packageJsonFile = await this.fileManager.getFile(sessionId, 'package.json');
+        if (packageJsonFile?.content) {
+          context.packageJson = packageJsonFile.content;
+        }
+      } catch (error) {
+        // 文件不存在是正常的，忽略错误
       }
 
       // 获取 tsconfig.json
-      const tsconfigFile = await this.fileManager.getFile(sessionId, 'tsconfig.json');
-      if (tsconfigFile?.content) {
-        context.tsconfigJson = tsconfigFile.content;
-        // 解析路径别名
-        context.pathAliases = this.extractPathAliases(tsconfigFile.content);
+      try {
+        const tsconfigFile = await this.fileManager.getFile(sessionId, 'tsconfig.json');
+        if (tsconfigFile?.content) {
+          context.tsconfigJson = tsconfigFile.content;
+          // 解析路径别名
+          context.pathAliases = this.extractPathAliases(tsconfigFile.content);
+        }
+      } catch (error) {
+        // 文件不存在是正常的，忽略错误
       }
 
       // 获取 vite.config.js/ts
-      const viteConfigJs = await this.fileManager.getFile(sessionId, 'vite.config.js');
-      const viteConfigTs = await this.fileManager.getFile(sessionId, 'vite.config.ts');
-      const viteConfig = viteConfigTs || viteConfigJs;
-      if (viteConfig?.content) {
-        context.viteConfig = viteConfig.content;
+      try {
+        const viteConfigJs = await this.fileManager.getFile(sessionId, 'vite.config.js');
+        const viteConfigTs = await this.fileManager.getFile(sessionId, 'vite.config.ts');
+        const viteConfig = viteConfigTs || viteConfigJs;
+        if (viteConfig?.content) {
+          context.viteConfig = viteConfig.content;
+        }
+      } catch (error) {
+        // 文件不存在是正常的，忽略错误
       }
 
       logger.info(`📋 [PromptInjector] 已加载项目上下文 (session: ${sessionId})`);

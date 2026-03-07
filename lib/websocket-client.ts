@@ -1,8 +1,10 @@
 /**
  * WebSocket 客户端 - 用于前端实时接收工作流进度和文件更新
+ * 自动检测环境：本地使用 WebSocket，Vercel 使用 SSE
  */
 
 import { io, Socket } from 'socket.io-client';
+import { getSSEClient, SSEClient, SSEEventHandler } from './sse-client';
 
 export interface WorkflowProgressEvent {
   type: 'WORKFLOW_PROGRESS';
@@ -31,38 +33,55 @@ export type WebSocketEventHandler = {
 
 export class WebSocketClient {
   private socket: Socket | null = null;
+  private sseClient: SSEClient | null = null;
   private handlers: WebSocketEventHandler = {};
   private isConnected: boolean = false;
   private subscribedSessions: Set<string> = new Set();
+  private useSSE: boolean = false;
 
   constructor(private serverUrl?: string) {
     // 默认使用当前页面的 origin
     this.serverUrl = serverUrl || (typeof window !== 'undefined' ? window.location.origin : '');
+    
+    // 始终使用 SSE 模式
+    this.useSSE = true;
+    this.sseClient = getSSEClient(this.serverUrl);
+    console.log('🌐 使用 SSE 模式');
   }
 
   /**
-   * 连接到 WebSocket 服务器
+   * 连接到服务器（WebSocket 或 SSE）
    */
   connect(): void {
-    if (this.socket?.connected) {
-      console.warn('WebSocket 已经连接');
-      return;
-    }
+    if (this.useSSE) {
+      // 使用 SSE
+      if (this.sseClient) {
+        // SSE 需要 sessionId，所以这里只是初始化
+        // 实际的连接在 subscribe 时进行
+        console.log('🔌 SSE 客户端已准备就绪');
+      }
+    } else {
+      // 使用 WebSocket
+      if (this.socket?.connected) {
+        console.warn('WebSocket 已经连接');
+        return;
+      }
 
-    try {
-      this.socket = io(this.serverUrl!, {
-        path: '/socket.io',
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionDelay: 1000,
-        reconnectionAttempts: 5,
-      });
+      try {
+        this.socket = io(this.serverUrl!, {
+          path: '/socket.io',
+          transports: ['websocket', 'polling'],
+          reconnection: true,
+          reconnectionDelay: 1000,
+          reconnectionAttempts: 5,
+        });
 
-      this.setupEventHandlers();
-      console.log('🔌 WebSocket 客户端连接中...');
-    } catch (error: any) {
-      console.error('WebSocket 连接失败:', error);
-      this.handlers.onError?.(error);
+        this.setupEventHandlers();
+        console.log('🔌 WebSocket 客户端连接中...');
+      } catch (error: any) {
+        console.error('WebSocket 连接失败:', error);
+        this.handlers.onError?.(error);
+      }
     }
   }
 
@@ -70,12 +89,21 @@ export class WebSocketClient {
    * 断开连接
    */
   disconnect(): void {
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
-      this.isConnected = false;
-      this.subscribedSessions.clear();
-      console.log('🔌 WebSocket 客户端已断开');
+    if (this.useSSE) {
+      if (this.sseClient) {
+        this.sseClient.disconnect();
+        this.isConnected = false;
+        this.subscribedSessions.clear();
+        console.log('🔌 SSE 客户端已断开');
+      }
+    } else {
+      if (this.socket) {
+        this.socket.disconnect();
+        this.socket = null;
+        this.isConnected = false;
+        this.subscribedSessions.clear();
+        console.log('🔌 WebSocket 客户端已断开');
+      }
     }
   }
 
@@ -83,36 +111,75 @@ export class WebSocketClient {
    * 订阅 session 的更新
    */
   subscribe(sessionId: string): void {
-    if (!this.socket?.connected) {
-      console.warn('WebSocket 未连接，无法订阅');
-      return;
-    }
+    if (this.useSSE) {
+      // 使用 SSE
+      if (this.sseClient) {
+        this.sseClient.subscribe(sessionId);
+        // 设置 SSE 事件处理器
+        this.sseClient.setHandlers({
+          onWorkflowProgress: (event) => {
+            this.handlers.onWorkflowProgress?.(event);
+          },
+          onFileUpdate: (event) => {
+            this.handlers.onFileUpdate?.(event);
+          },
+          onFileUpdates: (events) => {
+            this.handlers.onFileUpdates?.(events);
+          },
+          onConnect: () => {
+            this.isConnected = true;
+            this.handlers.onConnect?.();
+          },
+          onDisconnect: () => {
+            this.isConnected = false;
+            this.handlers.onDisconnect?.();
+          },
+          onError: (error) => {
+            this.handlers.onError?.(error);
+          },
+        });
+        this.subscribedSessions.add(sessionId);
+      }
+    } else {
+      // 使用 WebSocket
+      if (!this.socket?.connected) {
+        console.warn('WebSocket 未连接，无法订阅');
+        return;
+      }
 
-    if (this.subscribedSessions.has(sessionId)) {
-      console.debug(`已订阅 session: ${sessionId}`);
-      return;
-    }
+      if (this.subscribedSessions.has(sessionId)) {
+        console.debug(`已订阅 session: ${sessionId}`);
+        return;
+      }
 
-    this.socket.emit('subscribe', sessionId);
-    this.subscribedSessions.add(sessionId);
-    console.log(`📡 订阅 session: ${sessionId}`);
+      this.socket.emit('subscribe', sessionId);
+      this.subscribedSessions.add(sessionId);
+      console.log(`📡 订阅 session: ${sessionId}`);
+    }
   }
 
   /**
    * 取消订阅 session
    */
   unsubscribe(sessionId: string): void {
-    if (!this.socket?.connected) {
-      return;
-    }
+    if (this.useSSE) {
+      if (this.sseClient) {
+        this.sseClient.unsubscribe(sessionId);
+        this.subscribedSessions.delete(sessionId);
+      }
+    } else {
+      if (!this.socket?.connected) {
+        return;
+      }
 
-    if (!this.subscribedSessions.has(sessionId)) {
-      return;
-    }
+      if (!this.subscribedSessions.has(sessionId)) {
+        return;
+      }
 
-    this.socket.emit('unsubscribe', sessionId);
-    this.subscribedSessions.delete(sessionId);
-    console.log(`📡 取消订阅 session: ${sessionId}`);
+      this.socket.emit('unsubscribe', sessionId);
+      this.subscribedSessions.delete(sessionId);
+      console.log(`📡 取消订阅 session: ${sessionId}`);
+    }
   }
 
   /**
@@ -184,6 +251,9 @@ export class WebSocketClient {
    * 获取连接状态
    */
   getConnected(): boolean {
+    if (this.useSSE) {
+      return this.sseClient?.getConnected() || false;
+    }
     return this.isConnected;
   }
 

@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import { ChatInput } from './ChatInput';
 import { MessageList } from './MessageList';
 import { WorkflowProgress } from './WorkflowProgress';
-import { getWebSocketClient, FileUpdateEvent } from '@/lib/websocket-client';
+import { getWebSocketClient, FileUpdateEvent, WorkflowProgressEvent } from '@/lib/websocket-client';
 
 interface Message {
   id: string;
@@ -29,34 +29,18 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
   const [loading, setLoading] = useState(false);
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [showProgress, setShowProgress] = useState(false);
+  const [workflowProgress, setWorkflowProgress] = useState<WorkflowProgressEvent | null>(null);
   const lastLoadedSessionIdRef = useRef<string | null>(null); // 跟踪已加载的 sessionId，避免重复请求
+  const actualSessionIdRef = useRef<string | null>(sessionId); // 跟踪实际 sessionId（含新建后的）
+  const currentRequestIdRef = useRef<string | null>(null); // 当前请求的 SSE 频道 ID
   
-  // 初始化 WebSocket 客户端
+  // 初始化 SSE 客户端连接
   useEffect(() => {
     const wsClient = getWebSocketClient();
-    
-    // 连接 WebSocket
     if (!wsClient.getConnected()) {
       wsClient.connect();
     }
-
-    // 设置文件更新处理器
-    wsClient.setHandlers({
-      onFileUpdates: (events: FileUpdateEvent[]) => {
-        // 文件更新时，触发刷新
-        if (onFilesUpdated) {
-          console.log('📝 收到文件更新事件，刷新文件列表');
-          setTimeout(() => {
-            onFilesUpdated();
-          }, 500);
-        }
-      },
-    });
-
-    return () => {
-      // 组件卸载时不断开连接（可能还有其他组件在使用）
-    };
-  }, [onFilesUpdated]);
+  }, []);
 
   // 加载会话历史记录
   useEffect(() => {
@@ -122,19 +106,44 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
     setMessages((prev) => [...prev, userMessage]);
     setLoading(true);
     setShowProgress(true); // 显示进度条
+    setWorkflowProgress(null); // 重置进度
 
     try {
-      // 订阅 WebSocket（如果 sessionId 存在）
-      if (sessionId) {
-        const wsClient = getWebSocketClient();
-        wsClient.subscribe(sessionId);
-      }
+      // ✅ 关键修复：客户端生成唯一 requestId 作为 SSE 推送频道
+      // 这样无论 sessionId 是否存在，都能在 API 调用前建立好 SSE 连接
+      const requestId = typeof crypto !== 'undefined' && crypto.randomUUID
+        ? crypto.randomUUID()
+        : `req-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
-      // 调用 VIP Agent API（使用新的工作流）
+      const wsClient = getWebSocketClient();
+
+      // 先订阅 requestId 频道，再发 API 请求（避免错过早期 SSE 事件）
+      wsClient.subscribe(requestId);
+      wsClient.setHandlers({
+        onWorkflowProgress: (event: WorkflowProgressEvent) => {
+          // 接受 requestId 频道 或 sessionId 频道 的事件
+          if (event.sessionId === requestId ||
+              event.sessionId === sessionId ||
+              event.sessionId === actualSessionIdRef.current) {
+            setWorkflowProgress(event);
+          }
+        },
+        onFileUpdates: (events: FileUpdateEvent[]) => {
+          if (onFilesUpdated) {
+            console.log('📝 收到文件更新事件，刷新文件列表');
+            setTimeout(() => { onFilesUpdated(); }, 500);
+          }
+        },
+      });
+
+      currentRequestIdRef.current = requestId;
+      console.log(`📡 SSE 订阅频道: ${requestId}`);
+
+      // 调用 VIP Agent API，传入 requestId 让服务端向此频道推送进度
       const response = await fetch('/api/vip-agent', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: content, sessionId, userId }),
+        body: JSON.stringify({ prompt: content, sessionId, userId, requestId }),
       });
 
       const data = await response.json();
@@ -142,13 +151,10 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
       if (data.success) {
         // 更新 sessionId（如果 API 返回了新的 sessionId）
         const actualSessionId = data.sessionId || sessionId;
+        actualSessionIdRef.current = actualSessionId;
         if (actualSessionId && actualSessionId !== sessionId && onSessionIdChange) {
           onSessionIdChange(actualSessionId);
           console.log('✅ Session ID 已更新:', actualSessionId);
-          
-          // 订阅新的 session
-          const wsClient = getWebSocketClient();
-          wsClient.subscribe(actualSessionId);
         }
 
         // VIP Agent 返回的是 fileChanges，不是 code
@@ -190,8 +196,14 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
+      // 取消订阅 requestId 频道
+      if (currentRequestIdRef.current) {
+        getWebSocketClient().unsubscribe(currentRequestIdRef.current);
+        currentRequestIdRef.current = null;
+      }
       setLoading(false);
       setShowProgress(false); // 隐藏进度条
+      setWorkflowProgress(null); // 清空进度
     }
   };
 
@@ -215,7 +227,7 @@ export function ChatPanel({ projectId, sessionId, userId, projectName, onCodeGen
       )}
 
       {/* Workflow Progress */}
-      <WorkflowProgress sessionId={sessionId} visible={showProgress && loading} />
+      <WorkflowProgress progress={workflowProgress} visible={showProgress && loading} />
 
       {/* Input */}
       <ChatInput onSend={handleSend} disabled={loading} />

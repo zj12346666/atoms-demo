@@ -1,5 +1,131 @@
 // AI Prompt 工程
 
+import { ASTParser } from './ast-parser';
+import { ASTNodeLocator, ErrorLocation } from './ast-node-locator';
+import { CodeExtractor } from './code-extractor';
+import { logger } from './logger';
+
+/**
+ * BuildContextInput - 构建运行时上下文的输入
+ */
+export interface BuildContextInput {
+  error: {
+    message: string;
+    file?: string;
+    line?: number;
+    column?: number;
+    type?: string;
+  };
+  projectFiles: Array<{
+    path: string;
+    source: string;
+  }>;
+}
+
+/**
+ * RepairContext - 修复上下文（最小版本）
+ */
+export interface RepairContext {
+  error: BuildContextInput['error'];
+  primarySnippet: {
+    code: string;
+    startLine: number;
+    endLine: number;
+    startColumn: number;
+    endColumn: number;
+  } | null;
+  component?: {
+    code: string;
+    startLine: number;
+    endLine: number;
+    startColumn: number;
+    endColumn: number;
+  };
+}
+
+/**
+ * 构建运行时上下文
+ * 从错误信息和项目文件中提取修复所需的上下文
+ */
+export function buildRuntimeContext(input: BuildContextInput): RepairContext {
+  try {
+    const { error, projectFiles } = input;
+
+    // 1. 从 projectFiles 中获取 source
+    const errorFile = error.file;
+    if (!errorFile) {
+      logger.warn('⚠️ 错误信息缺少文件路径，无法构建上下文');
+      return {
+        error,
+        primarySnippet: null,
+        component: undefined,
+      };
+    }
+
+    const projectFile = projectFiles.find(f => f.path === errorFile);
+    if (!projectFile) {
+      logger.warn(`⚠️ 未找到错误文件: ${errorFile}`);
+      return {
+        error,
+        primarySnippet: null,
+        component: undefined,
+      };
+    }
+
+    const source = projectFile.source;
+
+    // 2. 使用 ASTParser 解析 AST
+    const astParser = new ASTParser();
+    const ast = astParser.parse(source, errorFile);
+
+    // 3. 使用 ASTNodeLocator 定位错误节点
+    const nodeLocator = new ASTNodeLocator();
+    const errorLocation: ErrorLocation = {
+      file: errorFile,
+      line: error.line,
+      column: error.column,
+    };
+
+    const locatedNode = nodeLocator.locateErrorNode(ast, errorLocation);
+    
+    if (!locatedNode) {
+      logger.warn('⚠️ 无法定位错误节点，返回空片段');
+      return {
+        error,
+        primarySnippet: null,
+        component: undefined,
+      };
+    }
+
+    // 4. 使用 CodeExtractor.extractSnippet 提取 primarySnippet
+    const codeExtractor = new CodeExtractor();
+    const primarySnippet = codeExtractor.extractSnippet(ast, locatedNode);
+
+    // 5. 使用 locator.findEnclosingFunction 查找包含函数
+    const enclosingFunction = nodeLocator.findEnclosingFunction(ast, locatedNode);
+    
+    // 6. 如果找到函数，使用 extractor.extractComponent 提取组件代码
+    let component: RepairContext['component'] = undefined;
+    if (enclosingFunction) {
+      component = codeExtractor.extractComponent(ast, enclosingFunction);
+    }
+
+    // 7. 返回最小 RepairContext
+    return {
+      error,
+      primarySnippet,
+      component,
+    };
+  } catch (error: any) {
+    logger.error('❌ 构建运行时上下文失败:', error);
+    return {
+      error: input.error,
+      primarySnippet: null,
+      component: undefined,
+    };
+  }
+}
+
 export const SYSTEM_PROMPT = `你是一个专业的前端代码生成助手。
 
 用户会描述他们想要的应用，你需要生成完整的、可运行的代码。

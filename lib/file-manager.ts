@@ -3,6 +3,7 @@
 import { prisma, isDatabaseAvailable, ensureConnection } from './db';
 import { logger } from './logger';
 import { v4 as uuidv4 } from 'uuid';
+import { templateCompleter } from './webcontainer/template-completer';
 
 export interface FileInfo {
   id: string;
@@ -309,6 +310,20 @@ export class FileManager {
           const mimeType = this.getMimeType(file.path);
           await this.saveFile(sessionId, file.path, file.content, mimeType);
           logger.info(`  ✅ ${file.path} 已保存`);
+        }
+
+        // 使用 TemplateCompleter 补全缺失的关键文件（package.json、vite.config.ts 等）
+        const flatFiles: Record<string, string> = {};
+        for (const file of code.files) {
+          flatFiles[file.path] = file.content;
+        }
+        const completed = templateCompleter.complete(flatFiles);
+        for (const [filePath, fileContent] of Object.entries(completed)) {
+          if (!flatFiles[filePath]) {
+            const mimeType = this.getMimeType(filePath);
+            await this.saveFile(sessionId, filePath, fileContent, mimeType);
+            logger.info(`  ✅ [TemplateCompleter] ${filePath} 已补全并保存`);
+          }
         }
         
         // 保存实现方案（如果存在）

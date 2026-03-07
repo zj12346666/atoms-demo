@@ -40,13 +40,21 @@ export class EnvironmentSyncSkill {
     action: 'UPDATE' | 'CREATE' | 'DELETE' = 'UPDATE'
   ): Promise<void> {
     try {
+      if (!this.wsManager) {
+        logger.warn('⚠️ WebSocketManager 未初始化，跳过同步');
+        return;
+      }
+
       if (!filePaths || filePaths.length === 0) {
         // 发送通用刷新事件
-        this.wsManager.emitFileUpdate({
+        const emitPromise = this.wsManager.emitFileUpdate({
           type: 'FILE_UPDATED',
           sessionId,
           path: '*', // 通配符表示所有文件
         });
+        if (emitPromise && typeof emitPromise.catch === 'function') {
+          emitPromise.catch(err => logger.warn('Failed to emit file update:', err));
+        }
         logger.info(`📡 发送 Web IDE 刷新指令 (session: ${sessionId}, 所有文件)`);
         return;
       }
@@ -72,7 +80,10 @@ export class EnvironmentSyncSkill {
         }
       }
 
-      this.wsManager.emitFileUpdates(events);
+      const emitPromise = this.wsManager.emitFileUpdates(events);
+      if (emitPromise && typeof emitPromise.catch === 'function') {
+        emitPromise.catch(err => logger.warn('Failed to emit file updates:', err));
+      }
       logger.info(`📡 发送 Web IDE 刷新指令 (session: ${sessionId}, ${events.length} 个文件)`);
     } catch (error: any) {
       logger.error('❌ 同步 Web IDE 视图失败:', error);
@@ -194,7 +205,11 @@ export class EnvironmentSyncSkill {
     progress: number,
     details?: string
   ): void {
-    this.wsManager.emitWorkflowProgress({
+    if (!this.wsManager) {
+      logger.warn('⚠️ WebSocketManager 未初始化，跳过进度通知');
+      return;
+    }
+    const emitPromise = this.wsManager.emitWorkflowProgress({
       type: 'WORKFLOW_PROGRESS',
       sessionId,
       state,
@@ -202,6 +217,9 @@ export class EnvironmentSyncSkill {
       progress,
       details,
     });
+    if (emitPromise && typeof emitPromise.catch === 'function') {
+      emitPromise.catch(err => logger.warn('Failed to emit workflow progress:', err));
+    }
   }
 
   /**
