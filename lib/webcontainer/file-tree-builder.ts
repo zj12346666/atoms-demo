@@ -145,7 +145,7 @@ export class FileTreeBuilder {
     const errors: string[] = [];
 
     const validateNode = (
-      node: WebContainerFileTree | { file: { contents: string } } | { directory: WebContainerFileTree },
+      node: { file: { contents: string } } | { directory: WebContainerFileTree },
       path: string = ''
     ): void => {
       if ('file' in node) {
