@@ -264,6 +264,62 @@ export class PersistenceSkill {
   }
 
   /**
+   * 立即持久化单个文件（用于流式逐文件持久化场景）
+   * 不使用事务，每次调用独立写入，适合在代码生成流中逐文件调用。
+   */
+  async commitSingleFile(
+    sessionId: string,
+    _projectId: string,
+    filePath: string,
+    content: string
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!prisma) {
+      return { success: false, error: '数据库不可用' };
+    }
+    try {
+      await ensureConnection();
+
+      const pathParts = filePath.split('/');
+      const name = pathParts[pathParts.length - 1];
+      const mimeType = this.getMimeType(filePath);
+
+      const existing = await (prisma as any).file.findFirst({
+        where: { sessionId, path: filePath },
+      });
+
+      if (existing) {
+        await (prisma as any).file.update({
+          where: { id: existing.id },
+          data: {
+            content,
+            size: Buffer.byteLength(content, 'utf8'),
+            updatedAt: new Date(),
+          },
+        });
+        logger.info(`  📝 [即时持久化] 更新: ${filePath}`);
+      } else {
+        await (prisma as any).file.create({
+          data: {
+            sessionId,
+            path: filePath,
+            name,
+            type: 'text',
+            content,
+            mimeType,
+            size: Buffer.byteLength(content, 'utf8'),
+          },
+        });
+        logger.info(`  ✨ [即时持久化] 创建: ${filePath}`);
+      }
+
+      return { success: true };
+    } catch (error: any) {
+      logger.error(`❌ 即时持久化失败 (${filePath}):`, error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
    * 批量提交并刷新索引
    * 一次性完成持久化和索引更新
    */

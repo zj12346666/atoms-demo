@@ -313,4 +313,44 @@ export class MultiFileEngineeringSkill {
   getChangedFiles(): string[] {
     return this.virtualFs.getChangedFiles();
   }
+
+  /**
+   * 预加载现有文件到虚拟文件系统（不应用变更，仅为后续逐文件增量更新做准备）
+   * 用于流式逐文件持久化场景，在开始流式生成前调用一次。
+   */
+  async loadFromSession(sessionId: string): Promise<void> {
+    const existingFiles = await this.fileManager.getFiles(sessionId);
+    for (const file of existingFiles) {
+      if (file.content) {
+        this.virtualFs.loadFile(file.path, file.content);
+      }
+    }
+    logger.info(`📂 [loadFromSession] 预加载 ${existingFiles.length} 个现有文件到虚拟文件系统`);
+  }
+
+  /**
+   * 应用单个变更到虚拟文件系统并返回解析后的完整内容（用于流式逐文件持久化）
+   * 调用前需先确保虚拟文件系统已通过 loadFromSession 加载现有文件。
+   * @returns 解析合并后的文件内容；DELETE 操作返回 null
+   */
+  applySingleChangeAndGetContent(change: FileChange): string | null {
+    try {
+      // UPDATE 且文件不存在，转换为 CREATE
+      if (change.action === 'UPDATE' && !this.virtualFs.getFile(change.path)) {
+        logger.warn(`⚠️ 文件 ${change.path} 不存在，将 UPDATE 转换为 CREATE`);
+        change.action = 'CREATE';
+      }
+
+      this.virtualFs.applyChange(change);
+
+      if (change.action === 'DELETE') {
+        return null;
+      }
+
+      return this.virtualFs.getFile(change.path) ?? change.code;
+    } catch (error: any) {
+      logger.error(`❌ applySingleChangeAndGetContent 失败 (${change.path}):`, error);
+      return null;
+    }
+  }
 }

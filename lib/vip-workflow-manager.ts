@@ -139,7 +139,7 @@ export interface WorkflowResult {
 export class VIPWorkflowManager {
   private client: OpenAI;
   private fileManager: FileManager;
-  private maxFixAttempts = 3;
+  private maxFixAttempts = 13;
 
   // 8 大核心 Skill 模块
   private symbolicDiscovery: SymbolicDiscoverySkill;
@@ -272,6 +272,8 @@ export class VIPWorkflowManager {
       });
 
       // ========== 阶段2-3: Code Generation + Validation Loop ==========
+      // 记录原始 prompt，供 esbuild 精准修复时使用
+      const originalPrompt = prompt;
       while (fixAttempts < this.maxFixAttempts) {
         // 阶段2: MultiFileCodeGen
         if (fixAttempts > 0) {
@@ -289,6 +291,11 @@ export class VIPWorkflowManager {
             details: '基于检索到的符号和现有代码结构生成新代码',
           });
         }
+
+        // 每次迭代开始：重置虚拟文件系统，从数据库加载最新状态
+        // （首次：加载已有文件；重试：加载上一轮已持久化的文件）
+        this.multiFileEngineering.clearStaged();
+        await this.multiFileEngineering.loadFromSession(sessionId);
 
         // 注入项目上下文（package.json, tsconfig.json 等）
         let enhancedPrompt = prompt;
@@ -310,7 +317,31 @@ export class VIPWorkflowManager {
           details: `使用 glm-4-plus 模型，${isModificationMode ? '增量修改模式' : '全新生成模式'}，架构: ${detectedArch.spec.label}`,
         });
 
-        // 生成代码（XML格式，带流式进度）
+        // ── 逐文件流式生成 + 即时持久化回调 ──────────────────────────────
+        const streamedFileChanges: FileChange[] = [];
+        const onFileReady = async (change: FileChange): Promise<void> => {
+          // 1. 应用到虚拟文件系统并获取解析后的完整内容
+          const resolvedContent = this.multiFileEngineering.applySingleChangeAndGetContent(change);
+          if (resolvedContent !== null) {
+            // 2. 立即持久化到数据库
+            await this.persistence.commitSingleFile(sessionId, projectId, change.path, resolvedContent);
+            // 3. 立即通知前端（编辑器文件树更新）
+            try {
+              await this.environmentSync.syncWebIdeView(sessionId, [change.path], 'UPDATE');
+            } catch (syncErr) {
+              logger.warn(`⚠️ 同步前端失败 (${change.path}):`, syncErr);
+            }
+            onProgress({
+              state: 'code_generation',
+              message: `${change.action === 'CREATE' ? '🆕 创建' : change.action === 'DELETE' ? '🗑️ 删除' : '✏️ 更新'}: ${change.path}`,
+              progress: fixAttempts > 0 ? 36 + fixAttempts * 5 : 36,
+              details: '文件已生成并立即保存到数据库',
+            });
+          }
+          streamedFileChanges.push({ ...change });
+        };
+
+        // 生成代码（XML格式，带流式进度 + 逐文件回调）
         const generatedXml = await this.generateCode(
           enhancedPrompt,
           keywords,
@@ -326,20 +357,40 @@ export class VIPWorkflowManager {
               details: '等待 AI 完成代码生成',
             });
           },
-          detectedArch
+          detectedArch,
+          onFileReady  // 流式逐文件持久化回调
         );
 
-        onProgress({
-          state: 'code_generation',
-          message: '📦 解析 AI 生成的代码结构...',
-          progress: 42,
-          details: '从 XML 格式中提取文件变更',
-        });
-
-        // 解析XML
+        // 解析完整 XML（提取 plan；同时作为 streamedFileChanges 的兜底）
         const parsed = this.parseXmlFileChanges(generatedXml);
         plan = parsed.plan || '';
-        fileChanges = parsed.fileChanges;
+
+        // 优先使用流式已处理的变更列表；若流式回调未触发（非流式模式兜底），则补充解析结果
+        if (streamedFileChanges.length > 0) {
+          fileChanges = streamedFileChanges;
+          // 兜底：补充流式未处理到的文件（理论上不会出现，但防御性处理）
+          for (const fc of parsed.fileChanges) {
+            if (!streamedFileChanges.find(s => s.path === fc.path)) {
+              logger.warn(`⚠️ 流式未处理文件 ${fc.path}，补充持久化`);
+              const content = this.multiFileEngineering.applySingleChangeAndGetContent(fc);
+              if (content !== null) {
+                await this.persistence.commitSingleFile(sessionId, projectId, fc.path, content);
+                await this.environmentSync.syncWebIdeView(sessionId, [fc.path], 'UPDATE');
+              }
+              fileChanges.push(fc);
+            }
+          }
+        } else {
+          // 非流式兜底：所有文件通过 parseXml 获得，逐个应用并持久化
+          fileChanges = parsed.fileChanges;
+          for (const fc of fileChanges) {
+            const content = this.multiFileEngineering.applySingleChangeAndGetContent(fc);
+            if (content !== null) {
+              await this.persistence.commitSingleFile(sessionId, projectId, fc.path, content);
+              await this.environmentSync.syncWebIdeView(sessionId, [fc.path], 'UPDATE');
+            }
+          }
+        }
 
         if (fileChanges.length === 0) {
           throw new Error('未生成任何文件变更');
@@ -347,8 +398,8 @@ export class VIPWorkflowManager {
 
         onProgress({
           state: 'code_generation',
-          message: `📝 已解析 ${fileChanges.length} 个文件的变更`,
-          progress: 45,
+          message: `✅ ${fileChanges.length} 个文件已生成并保存`,
+          progress: 50,
           details: fileChanges.map(fc => `  ${fc.action === 'CREATE' ? '🆕' : fc.action === 'DELETE' ? '🗑️' : '✏️'} ${fc.path}`).join('\n'),
         });
 
@@ -356,34 +407,10 @@ export class VIPWorkflowManager {
           onProgress({
             state: 'code_generation',
             message: '📋 实现方案',
-            progress: 47,
+            progress: 51,
             details: plan,
           });
         }
-
-        onProgress({
-          state: 'code_generation',
-          message: `⏳ 暂存 ${fileChanges.length} 个文件变更...`,
-          progress: 48,
-          details: '写入临时缓冲区，等待验证通过后持久化',
-        });
-
-        // 使用 MultiFileEngineeringSkill 暂存代码变更
-        const stageResult = await this.multiFileEngineering.stageCodeChanges(
-          fileChanges,
-          sessionId
-        );
-
-        if (!stageResult.success) {
-          throw new Error(`暂存代码变更失败: ${stageResult.errors?.join(', ')}`);
-        }
-
-        onProgress({
-          state: 'code_generation',
-          message: `✅ ${fileChanges.length} 个文件已暂存`,
-          progress: 50,
-          details: '代码暂存完成，准备进行验证',
-        });
 
         // 阶段3: Validation Loop (使用 SandboxValidationSkill)
         const stagedFiles = this.multiFileEngineering.getAllStagedFiles();
@@ -476,13 +503,6 @@ export class VIPWorkflowManager {
               details: compileReport.errors.slice(0, 3).map(e => `  • ${e.file}:${e.line} - ${e.message}`).join('\n'),
             });
 
-            onProgress({
-              state: 'fixing',
-              message: `🔧 准备自动修复编译错误... (第 ${fixAttempts + 1}/${this.maxFixAttempts} 次尝试)`,
-              progress: 69,
-              details: '将 esbuild 错误信息反馈给 AI 进行修复',
-            });
-
             fixAttempts++;
             if (fixAttempts >= this.maxFixAttempts) {
               this.multiFileEngineering.clearStaged();
@@ -496,13 +516,79 @@ export class VIPWorkflowManager {
               };
             }
 
-            // 将 esbuild 错误追加到 prompt，让 AI 修复后重新生成
-            const errorsText = this.esbuildCompile.formatErrorsForPrompt(
+            // ── 精准修复：识别有问题的文件，只让 Code Agent 重新生成它们 ──
+            const currentStagedForFix = this.multiFileEngineering.getAllStagedFiles();
+            const problematicFiles = this.extractProblematicFilesFromEsbuildErrors(
               compileReport.errors,
-              compileReport.autoCreatedFiles
+              currentStagedForFix
             );
-            prompt = `${prompt}\n\n${errorsText}`;
-            continue; // 返回代码生成循环顶部，重新生成
+
+            onProgress({
+              state: 'fixing',
+              message: `🔧 精准修复 ${problematicFiles.length} 个问题文件 (第 ${fixAttempts}/${this.maxFixAttempts} 次)`,
+              progress: 69,
+              details: problematicFiles.length > 0
+                ? `需要修复:\n${problematicFiles.map(f => `  • ${f}`).join('\n')}`
+                : '无法识别具体文件，将全量重新生成',
+            });
+
+            if (problematicFiles.length === 0) {
+              // 无法精确定位 → 降级为全量重新生成
+              const errorsText = this.esbuildCompile.formatErrorsForPrompt(
+                compileReport.errors,
+                compileReport.autoCreatedFiles
+              );
+              prompt = `${originalPrompt}\n\n${errorsText}`;
+              continue;
+            }
+
+            // 构建精准修复 prompt，调用 Code Agent 只生成问题文件
+            const targetedFixPrompt = this.buildEsbuildTargetedFixPrompt(
+              originalPrompt,
+              problematicFiles,
+              compileReport.errors,
+              currentStagedForFix
+            );
+
+            // 生成并立即持久化问题文件（复用 onFileReady 流式逻辑）
+            const fixedChanges = await this.generateAndPersistTargetedFiles(
+              targetedFixPrompt,
+              sessionId,
+              projectId,
+              detectedArch,
+              onProgress
+            );
+            fileChanges = [...fileChanges, ...fixedChanges];
+
+            // 重新运行 esbuild 验证（使用修复后的文件）
+            const reCheckFiles = this.multiFileEngineering.getAllStagedFiles();
+            const reCheckReport = await this.esbuildCompile.compileAndCheck(reCheckFiles);
+
+            if (reCheckReport.success) {
+              onProgress({
+                state: 'validation',
+                message: '✅ esbuild 精准修复成功，编译通过！',
+                progress: 70,
+                details: '所有编译错误已定向修复',
+              });
+              break; // esbuild 通过，跳出外层 while 循环
+            }
+
+            // 修复后仍有错误，继续下一轮
+            onProgress({
+              state: 'fixing',
+              message: `⚠️ 精准修复后仍有 ${reCheckReport.errors.length} 个编译错误，继续修复...`,
+              progress: 70,
+              details: reCheckReport.errors.slice(0, 2).map(e => `  • ${e.file}:${e.line} - ${e.message}`).join('\n'),
+            });
+            // 下一轮使用当前错误信息继续精准修复
+            prompt = this.buildEsbuildTargetedFixPrompt(
+              originalPrompt,
+              this.extractProblematicFilesFromEsbuildErrors(reCheckReport.errors, this.multiFileEngineering.getAllStagedFiles()),
+              reCheckReport.errors,
+              this.multiFileEngineering.getAllStagedFiles()
+            );
+            continue;
           }
 
           if (compileReport.autoCreatedFiles.length > 0) {
@@ -712,7 +798,7 @@ export class VIPWorkflowManager {
         }
       }
 
-      // ========== 阶段5: Persistence (使用 PersistenceSkill) ==========
+      // ========== 阶段5: 模板补全 + 符号索引（文件已在生成时逐个持久化） ==========
       const stagedFiles = this.multiFileEngineering.getAllStagedFiles();
 
       // ✅ 用 TemplateCompleter 补全缺失的关键文件（package.json、vite.config.ts 等）
@@ -722,38 +808,39 @@ export class VIPWorkflowManager {
         flatFiles[path] = content;
       }
       const completed = templateCompleter.complete(flatFiles);
+      const templateCompletedFiles = new Map<string, string>();
       for (const [filePath, fileContent] of Object.entries(completed)) {
         if (!flatFiles[filePath]) {
           stagedFiles.set(filePath, fileContent);
+          templateCompletedFiles.set(filePath, fileContent);
           logger.info(`  ✅ [TemplateCompleter] 补全文件: ${filePath}`);
         }
       }
 
-      const stagedFileList = Array.from(stagedFiles.keys());
-      
-      onProgress({
-        state: 'persistence',
-        message: `💾 持久化 ${stagedFiles.size} 个文件到数据库...`,
-        progress: 80,
-        details: stagedFileList.slice(0, 5).map(f => `  📄 ${f}`).join('\n') + (stagedFileList.length > 5 ? `\n  ... 等 ${stagedFileList.length} 个文件` : ''),
-      });
-
-      const { persistence, reindex } = await this.persistence.commitAndRefresh(
-        sessionId,
-        projectId,
-        stagedFiles
-      );
-
-      if (!persistence.success) {
-        throw new Error(`持久化失败: ${persistence.errors?.join(', ')}`);
+      // 持久化 TemplateCompleter 补全的文件（其余文件已在生成时即时持久化）
+      if (templateCompletedFiles.size > 0) {
+        onProgress({
+          state: 'persistence',
+          message: `💾 持久化 ${templateCompletedFiles.size} 个补全文件...`,
+          progress: 80,
+          details: Array.from(templateCompletedFiles.keys()).map(f => `  📄 ${f}`).join('\n'),
+        });
+        for (const [filePath, fileContent] of templateCompletedFiles.entries()) {
+          await this.persistence.commitSingleFile(sessionId, projectId, filePath, fileContent);
+        }
       }
 
+      const stagedFileList = Array.from(stagedFiles.keys());
+
       onProgress({
         state: 'persistence',
-        message: `✅ ${stagedFiles.size} 个文件已保存`,
+        message: `✅ 共 ${stagedFiles.size} 个文件已全部保存`,
         progress: 85,
-        details: `数据库写入成功，共 ${stagedFiles.size} 个文件`,
+        details: `生成时即时持久化 ${fileChanges.length} 个，模板补全 ${templateCompletedFiles.size} 个`,
       });
+
+      // 刷新符号索引（仅对生成/修改的文件）
+      const reindex = await this.persistence.refreshSymbolIndex(stagedFileList, sessionId, projectId);
 
       // ========== 阶段6: Reindex (已在 commitAndRefresh 中完成) ==========
       onProgress({
@@ -1100,7 +1187,8 @@ ${fileList}
     isModificationMode: boolean = false,
     previousAttempt?: { fileChanges: FileChange[]; errors: string[] },
     onToken?: (charCount: number) => void,
-    arch?: { type: ArchitectureType; spec: ArchitectureSpec }
+    arch?: { type: ArchitectureType; spec: ArchitectureSpec },
+    onFileReady?: (change: FileChange) => Promise<void>
   ): Promise<string> {
     // 构建符号上下文（包含签名）
     const symbolContext = symbols.map(s => `
@@ -1226,7 +1314,7 @@ ${currentFiles.map(f => `- ${f.path}`).join('\n')}
     let content = '';
 
     if (onToken) {
-      // 流式模式：边生成边回调进度
+      // 流式模式：边生成边回调进度，并增量解析 file_change 块
       const stream = await this.client.chat.completions.create({
         model: 'glm-4-plus',
         messages: [
@@ -1239,10 +1327,40 @@ ${currentFiles.map(f => `- ${f.path}`).join('\n')}
       });
 
       let lastCallbackAt = 0;
+      // lastProcessedEnd: 已处理完的字符位置（所有完整 file_change 块结束处）
+      let lastProcessedEnd = 0;
+
       for await (const chunk of stream) {
         const delta = chunk.choices[0]?.delta?.content || '';
         content += delta;
-        // 每 200 个字符触发一次回调，避免过于频繁
+
+        // ── 增量 XML 解析：检测并处理新完成的 <file_change> 块 ──
+        if (onFileReady) {
+          while (true) {
+            const startIdx = content.indexOf('<file_change', lastProcessedEnd);
+            if (startIdx === -1) break;
+
+            const endTag = '</file_change>';
+            const endIdx = content.indexOf(endTag, startIdx);
+            if (endIdx === -1) break; // 当前块尚未传完，等待更多 chunk
+
+            const blockEnd = endIdx + endTag.length;
+            const block = content.substring(startIdx, blockEnd);
+
+            const parsed = this.parseSingleFileChange(block);
+            if (parsed) {
+              try {
+                await onFileReady(parsed);
+              } catch (err) {
+                logger.warn(`⚠️ onFileReady 回调失败 (${parsed.path}):`, err);
+              }
+            }
+
+            lastProcessedEnd = blockEnd;
+          }
+        }
+
+        // 每 200 个字符触发一次进度回调
         if (content.length - lastCallbackAt >= 200) {
           onToken(content.length);
           lastCallbackAt = content.length;
@@ -1276,6 +1394,86 @@ ${currentFiles.map(f => `- ${f.path}`).join('\n')}
     }
 
     throw new Error('未找到有效的XML格式输出');
+  }
+
+  /**
+   * 解析单个 <file_change> XML 块（流式增量解析专用）
+   */
+  private parseSingleFileChange(block: string): FileChange | null {
+    const pathMatch = block.match(/<file_change\s+path=["']([^"']+)["']/);
+    const actionMatch = block.match(/<action>([^<]+)<\/action>/);
+    const codeMatch = block.match(/<code>([\s\S]*?)<\/code>/);
+
+    if (!pathMatch || !actionMatch || !codeMatch) return null;
+
+    const filePath = pathMatch[1].trim();
+    const action = actionMatch[1].trim().toUpperCase() as 'CREATE' | 'UPDATE' | 'DELETE';
+    const code = codeMatch[1].trim();
+
+    return {
+      path: filePath,
+      action,
+      code,
+      isDiff: code.includes('// ... existing code ...') || code.includes('/* ... existing code ... */'),
+    };
+  }
+
+  /**
+   * 从 esbuild 错误中提取需要修复的文件路径
+   * - "Could not resolve './App'" → 需要生成 src/App.tsx（缺失文件）+ 可能还要修 main.tsx
+   */
+  private extractProblematicFilesFromEsbuildErrors(
+    errors: Array<{ file: string; message: string }>,
+    stagedFiles: Map<string, string>
+  ): string[] {
+    const problematic = new Set<string>();
+
+    for (const error of errors) {
+      const resolveMatch = error.message.match(/Could not resolve ["']([^"']+)["']/);
+      if (resolveMatch) {
+        const importPath = resolveMatch[1];
+        const sourceFile = error.file; // e.g. "src/main.tsx"
+        const sourceDir = sourceFile.includes('/')
+          ? sourceFile.substring(0, sourceFile.lastIndexOf('/'))
+          : '.';
+
+        // 解析出引用的相对路径
+        let resolved = importPath.startsWith('.')
+          ? `${sourceDir}/${importPath}`
+          : importPath;
+
+        // 规范化路径分隔符，去掉前导 ./
+        resolved = resolved.replace(/\\/g, '/').replace(/\/\.\//g, '/').replace(/^\.\//, '');
+
+        // 检查是否已存在于暂存文件中（含扩展名变体）
+        const tryExtensions = ['.tsx', '.ts', '.jsx', '.js', '.css', '.vue'];
+        let alreadyExists = stagedFiles.has(resolved);
+        if (!alreadyExists) {
+          for (const ext of tryExtensions) {
+            if (stagedFiles.has(resolved + ext)) { alreadyExists = true; break; }
+          }
+        }
+
+        if (!alreadyExists) {
+          // 推断缺失文件路径
+          if (importPath.endsWith('.css')) {
+            problematic.add(resolved.endsWith('.css') ? resolved : resolved + '.css');
+          } else {
+            const baseName = importPath.replace(/^.*\//, '');
+            const isComponent = /^[A-Z]/.test(baseName);
+            problematic.add(resolved + (isComponent ? '.tsx' : '.ts'));
+          }
+        }
+
+        // 出错的源文件本身也需要重新生成（可能 import 路径写错了）
+        if (sourceFile) problematic.add(sourceFile);
+      } else {
+        // 其他类型的编译错误：直接修那个文件
+        if (error.file) problematic.add(error.file);
+      }
+    }
+
+    return Array.from(problematic).filter(Boolean);
   }
 
   /**
@@ -1335,6 +1533,98 @@ ${fileChanges.map(fc => `- ${fc.path} (${fc.action})`).join('\n')}
 2. 修复所有导入/导出错误
 3. 修复所有类型错误
 4. 确保代码可以编译通过（tsc --noEmit）`;
+  }
+
+  /**
+   * 构建 esbuild 精准修复 prompt
+   * 告诉 AI 只需生成出问题的那几个文件，不要动其他文件。
+   */
+  private buildEsbuildTargetedFixPrompt(
+    originalPrompt: string,
+    problematicFiles: string[],
+    errors: Array<{ file: string; line: number; message: string }>,
+    stagedFiles: Map<string, string>
+  ): string {
+    const errorMessages = errors.slice(0, 5)
+      .map(e => `  • ${e.file}:${e.line} - ${e.message}`)
+      .join('\n');
+
+    // 把相关文件的内容作为上下文提供给 AI
+    const contextParts: string[] = [];
+    for (const f of problematicFiles) {
+      const content = stagedFiles.get(f);
+      if (content) {
+        contextParts.push(`文件: ${f}\n\`\`\`\n${content.substring(0, 1000)}${content.length > 1000 ? '\n... (截断)' : ''}\n\`\`\``);
+      }
+    }
+    const contextBlock = contextParts.length > 0
+      ? `\n**相关文件参考：**\n${contextParts.join('\n\n')}\n`
+      : '';
+
+    return `${originalPrompt}
+
+**【esbuild 编译错误 - 精准修复模式】**
+
+编译错误如下：
+${errorMessages}
+
+**只需重新生成以下文件来修复上述错误（不要输出其他文件）：**
+${problematicFiles.map(f => `- ${f}`).join('\n')}
+${contextBlock}
+**重要：只输出上面列出的 ${problematicFiles.length} 个文件！其他文件无需改动。**`;
+  }
+
+  /**
+   * 调用 Code Agent 生成指定文件并立即持久化
+   * 用于 esbuild 精准修复场景：只生成出问题的文件。
+   */
+  private async generateAndPersistTargetedFiles(
+    targetedPrompt: string,
+    sessionId: string,
+    projectId: string,
+    arch: { type: ArchitectureType; spec: ArchitectureSpec },
+    onProgress: (progress: WorkflowProgress) => void
+  ): Promise<FileChange[]> {
+    const fixedChanges: FileChange[] = [];
+
+    await this.generateCode(
+      targetedPrompt,
+      [],  // 精准修复不需要符号检索
+      [],
+      [],
+      false,
+      undefined,
+      (charCount) => {
+        onProgress({
+          state: 'fixing',
+          message: `🔧 AI 正在生成修复代码... (${charCount} 字符)`,
+          progress: 70,
+          details: '定向生成问题文件',
+        });
+      },
+      arch,
+      async (change: FileChange) => {
+        logger.info(`🔧 [精准修复] 生成文件: ${change.path}`);
+        const resolvedContent = this.multiFileEngineering.applySingleChangeAndGetContent(change);
+        if (resolvedContent !== null) {
+          await this.persistence.commitSingleFile(sessionId, projectId, change.path, resolvedContent);
+          try {
+            await this.environmentSync.syncWebIdeView(sessionId, [change.path], 'UPDATE');
+          } catch (syncErr) {
+            logger.warn(`⚠️ 精准修复同步前端失败 (${change.path}):`, syncErr);
+          }
+          onProgress({
+            state: 'fixing',
+            message: `✅ 修复并保存: ${change.path}`,
+            progress: 71,
+            details: '文件已更新',
+          });
+          fixedChanges.push({ ...change });
+        }
+      }
+    );
+
+    return fixedChanges;
   }
 
   /**

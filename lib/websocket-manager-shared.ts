@@ -11,7 +11,7 @@ import { Server as SocketIOServer } from 'socket.io';
 import { logger } from './logger';
 
 // 动态导入 SSE 函数（避免循环依赖）
-let sendSSEEvent: ((sessionId: string, event: any) => boolean) | null = null;
+let sendSSEEvent: ((sessionId: string, event: any) => Promise<boolean>) | null = null;
 
 // 延迟加载 SSE 模块（仅在需要时）
 async function getSSESender() {
@@ -127,13 +127,13 @@ export class WebSocketManager {
   async emitFileUpdate(event: FileUpdateEvent): Promise<void> {
     const sseSender = await getSSESender();
     if (sseSender) {
-      const sent = sseSender(event.sessionId, { ...event, type: 'file_update' });
+      const sent = await sseSender(event.sessionId, { ...event, type: 'file_update' });
       if (sent) {
-        logger.info(`📤 [SSE] 发送文件更新到 session:${event.sessionId}: ${event.type} ${event.path}`);
+        logger.info(`📤 [SSE] 写入文件更新到 DB (session:${event.sessionId}): ${event.type} ${event.path}`);
         return;
       }
     }
-    logger.warn(`⚠️ [SSE] 无活跃连接 (session:${event.sessionId})，跳过文件更新通知`);
+    logger.warn(`⚠️ [SSE] 写入文件更新失败 (session:${event.sessionId})，数据库不可用`);
   }
 
   /**
@@ -156,11 +156,11 @@ export class WebSocketManager {
     }
 
     for (const [sessionId, sessionEvents] of eventsBySession.entries()) {
-      const sent = sseSender(sessionId, { type: 'file_updates', events: sessionEvents });
+      const sent = await sseSender(sessionId, { type: 'file_updates', events: sessionEvents });
       if (sent) {
-        logger.info(`📤 [SSE] 批量发送 ${sessionEvents.length} 个文件更新到 session:${sessionId}`);
+        logger.info(`📤 [SSE] 批量写入 ${sessionEvents.length} 个文件更新到 DB (session:${sessionId})`);
       } else {
-        logger.warn(`⚠️ [SSE] 无活跃连接 (session:${sessionId})，跳过批量文件更新`);
+        logger.warn(`⚠️ [SSE] 批量写入文件更新失败 (session:${sessionId})，数据库不可用`);
       }
     }
   }
@@ -171,13 +171,13 @@ export class WebSocketManager {
   async emitWorkflowProgress(event: WorkflowProgressEvent): Promise<void> {
     const sseSender = await getSSESender();
     if (sseSender) {
-      const sent = sseSender(event.sessionId, { ...event, type: 'workflow_progress' });
+      const sent = await sseSender(event.sessionId, { ...event, type: 'workflow_progress' });
       if (sent) {
-        logger.info(`📊 [SSE] → session:${event.sessionId}: [${event.state}] ${event.message} (${event.progress}%)`);
+        logger.info(`📊 [SSE] 写入进度到 DB → session:${event.sessionId}: [${event.state}] ${event.message} (${event.progress}%)`);
         return;
       }
     }
-    logger.warn(`⚠️ [SSE] 无活跃连接 (session:${event.sessionId})，跳过进度通知`);
+    logger.warn(`⚠️ [SSE] 写入进度失败 (session:${event.sessionId})，数据库不可用`);
   }
 
   /**
@@ -200,11 +200,11 @@ export class WebSocketManager {
     }
 
     for (const [sessionId, sessionEvents] of eventsBySession.entries()) {
-      const sent = sseSender(sessionId, { type: 'workflow_progresses', events: sessionEvents });
+      const sent = await sseSender(sessionId, { type: 'workflow_progresses', events: sessionEvents });
       if (sent) {
-        logger.info(`📊 [SSE] 批量发送 ${sessionEvents.length} 个进度事件到 session:${sessionId}`);
+        logger.info(`📊 [SSE] 批量写入 ${sessionEvents.length} 个进度事件到 DB (session:${sessionId})`);
       } else {
-        logger.warn(`⚠️ [SSE] 无活跃连接 (session:${sessionId})，跳过批量进度通知`);
+        logger.warn(`⚠️ [SSE] 批量写入进度失败 (session:${sessionId})，数据库不可用`);
       }
     }
   }

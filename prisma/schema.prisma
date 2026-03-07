@@ -156,6 +156,17 @@ model File {
   @@map("files")
 }
 
+// SSE 事件表 - 替代内存方式，解决 Vercel Serverless 多实例隔离问题
+model SseEvent {
+  id        Int      @id @default(autoincrement())
+  sessionId String
+  payload   String   // JSON string of the event
+  createdAt DateTime @default(now())
+
+  @@index([sessionId, id])
+  @@map("sse_events")
+}
+
 // ChatMessage 表 - 聊天记录
 model ChatMessage {
   id          String   @id @default(uuid())

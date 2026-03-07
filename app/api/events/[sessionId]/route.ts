@@ -1,16 +1,22 @@
 /**
- * Server-Sent Events (SSE) API 路由
- * 用于 Vercel 环境下的实时进度推送（替代 WebSocket）
+ * SSE 轮询 API 路由（替代长连接 SSE）
+ *
+ * 解决 Vercel Serverless 多实例问题：
+ *   - 旧方案：客户端保持 EventSource 长连接 → Serverless 跨实例内存不共享
+ *   - 新方案：客户端定时 GET 轮询，服务端从 PostgreSQL 读取新事件返回
+ *
+ * GET /api/events/[sessionId]?since=<lastEventId>
+ *   - since: 上一次拿到的最大事件 id（初次传 0）
+ *   - 返回: { events: [{ id, payload }], lastId: number }
  */
 
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { logger } from '@/lib/logger';
-import { registerSSEConnection, unregisterSSEConnection } from '@/lib/sse-manager';
+import { getSSEEvents, cleanupSSEEvents } from '@/lib/sse-manager';
 
-/**
- * GET /api/events/[sessionId]
- * 建立 SSE 连接，用于接收实时进度更新
- */
+// 简单的清理计数器：每 200 次请求清理一次过期事件
+let cleanupCounter = 0;
+
 export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ sessionId: string }> }
@@ -18,40 +24,33 @@ export async function GET(
   const { sessionId } = await params;
 
   if (!sessionId) {
-    return new Response('Session ID is required', { status: 400 });
+    return NextResponse.json({ error: 'Session ID is required' }, { status: 400 });
   }
 
-  logger.info(`📡 新的 SSE 连接: sessionId=${sessionId}`);
+  // 解析 since 参数（上次拿到的最大事件 id）
+  const sinceParam = req.nextUrl.searchParams.get('since');
+  const sinceId = sinceParam ? parseInt(sinceParam, 10) : 0;
 
-  // 创建 SSE 流
-  const stream = new ReadableStream({
-    start(controller) {
-      // 发送初始连接消息
-      const encoder = new TextEncoder();
-      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'connected', sessionId })}\n\n`));
+  // 读取新事件
+  const events = await getSSEEvents(sessionId, isNaN(sinceId) ? 0 : sinceId);
 
-      // 注册连接
-      registerSSEConnection(sessionId, controller);
+  const lastId = events.length > 0 ? events[events.length - 1].id : sinceId;
 
-      // 处理客户端断开连接
-      req.signal.addEventListener('abort', () => {
-        logger.info(`📡 SSE 连接断开: sessionId=${sessionId}`);
-        unregisterSSEConnection(sessionId, controller);
-        try {
-          controller.close();
-        } catch (e) {
-          // 连接可能已经关闭
-        }
-      });
-    },
-  });
+  logger.debug(`📡 [SSE轮询] session:${sessionId}, since:${sinceId}, 返回 ${events.length} 个事件`);
 
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache, no-transform',
-      'Connection': 'keep-alive',
-      'X-Accel-Buffering': 'no', // 禁用 Nginx 缓冲
-    },
-  });
+  // 低频清理过期事件
+  cleanupCounter++;
+  if (cleanupCounter >= 200) {
+    cleanupCounter = 0;
+    cleanupSSEEvents().catch(() => {});
+  }
+
+  return NextResponse.json(
+    { events, lastId },
+    {
+      headers: {
+        'Cache-Control': 'no-store',
+      },
+    }
+  );
 }
