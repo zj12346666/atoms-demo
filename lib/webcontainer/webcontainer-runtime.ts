@@ -233,6 +233,8 @@ export class WebContainerRuntime {
       throw new Error('WebContainer 未初始化');
     }
 
+    const webcontainer = this.webcontainer;
+
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         reject(new Error(`开发服务器启动超时（${timeout}ms）`));
@@ -241,16 +243,16 @@ export class WebContainerRuntime {
       // 监听 server-ready 事件
       const serverReadyHandler = (port: number, url: string) => {
         clearTimeout(timeoutId);
-        this.webcontainer?.off('server-ready', serverReadyHandler);
+        unsubscribeServerReady();
         this.previewUrl = url; // 缓存 preview URL
         logger.info(`✅ [WebContainerRuntime] 服务器就绪: ${url} (端口: ${port})`);
         resolve(url);
       };
 
-      this.webcontainer.on('server-ready', serverReadyHandler);
+      const unsubscribeServerReady = webcontainer.on('server-ready', serverReadyHandler);
 
       // 启动开发服务器
-      this.webcontainer
+      webcontainer
         .spawn('npm', ['run', 'dev'])
         .then((process) => {
           this.devProcess = process;
@@ -275,7 +277,7 @@ export class WebContainerRuntime {
                 if (urlMatch && !this.isInitialized) {
                   const url = urlMatch[0];
                   clearTimeout(timeoutId);
-                  this.webcontainer?.off('server-ready', serverReadyHandler);
+                  unsubscribeServerReady();
                   this.previewUrl = url;
                   resolve(url);
                 }
@@ -287,7 +289,7 @@ export class WebContainerRuntime {
           process.exit.then((exitCode) => {
             if (exitCode !== 0 && !this.isInitialized) {
               clearTimeout(timeoutId);
-              this.webcontainer?.off('server-ready', serverReadyHandler);
+              unsubscribeServerReady();
               reject(
                 new Error(`开发服务器异常退出，退出码: ${exitCode}`)
               );
@@ -296,7 +298,7 @@ export class WebContainerRuntime {
         })
         .catch((error) => {
           clearTimeout(timeoutId);
-          this.webcontainer?.off('server-ready', serverReadyHandler);
+          unsubscribeServerReady();
           reject(error);
         });
     });

@@ -127,7 +127,7 @@ export class WebSocketManager {
   async emitFileUpdate(event: FileUpdateEvent): Promise<void> {
     const sseSender = await getSSESender();
     if (sseSender) {
-      const sent = sseSender(event.sessionId, { type: 'file_update', ...event });
+      const sent = sseSender(event.sessionId, { ...event, type: 'file_update' });
       if (sent) {
         logger.info(`📤 [SSE] 发送文件更新到 session:${event.sessionId}: ${event.type} ${event.path}`);
         return;
@@ -171,7 +171,7 @@ export class WebSocketManager {
   async emitWorkflowProgress(event: WorkflowProgressEvent): Promise<void> {
     const sseSender = await getSSESender();
     if (sseSender) {
-      const sent = sseSender(event.sessionId, { type: 'workflow_progress', ...event });
+      const sent = sseSender(event.sessionId, { ...event, type: 'workflow_progress' });
       if (sent) {
         logger.info(`📊 [SSE] → session:${event.sessionId}: [${event.state}] ${event.message} (${event.progress}%)`);
         return;

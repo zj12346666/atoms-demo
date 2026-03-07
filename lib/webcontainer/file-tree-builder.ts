@@ -200,7 +200,7 @@ export class FileTreeBuilder {
     let totalSize = 0;
 
     const traverse = (
-      node: WebContainerFileTree | { file: { contents: string } } | { directory: WebContainerFileTree }
+      node: { file: { contents: string } } | { directory: WebContainerFileTree }
     ): void => {
       if ('file' in node) {
         fileCount++;
