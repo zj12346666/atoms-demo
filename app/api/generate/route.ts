@@ -98,11 +98,22 @@ export async function POST(req: NextRequest) {
       logger.warn('⚠️ 保存用户消息到聊天记录失败（非致命）:', error);
     }
     
-    // 初始化 Agent
-    const agent = new FrontendAgent(
-      'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0',
-      'https://open.bigmodel.cn/api/paas/v4'
-    );
+    // LLM API 仅从环境变量读取，不写死 key
+    const apiKey =
+      process.env.ZHIPUAI_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.LLM_API_KEY;
+    const baseURL =
+      process.env.ZHIPUAI_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      process.env.LLM_BASE_URL;
+    if (!apiKey) {
+      return NextResponse.json(
+        { success: false, error: 'LLM API key 未配置，请设置 ZHIPUAI_API_KEY、OPENAI_API_KEY 或 LLM_API_KEY 环境变量' },
+        { status: 503 }
+      );
+    }
+    const agent = new FrontendAgent(apiKey, baseURL || 'https://open.bigmodel.cn/api/paas/v4');
     
     const projectRoot = path.join(process.cwd());
     

@@ -71,18 +71,20 @@ ${errorMessages}
       emitPromise1.catch(err => logger.warn('Failed to emit workflow progress:', err));
     }
 
-    // 初始化VIPWorkflowManager（优先环境变量：ZHIPUAI_* / OPENAI_* / LLM_*）
+    // LLM API 仅从环境变量读取，不写死 key
     const apiKey =
       process.env.ZHIPUAI_API_KEY ||
       process.env.OPENAI_API_KEY ||
-      process.env.LLM_API_KEY ||
-      'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0';
+      process.env.LLM_API_KEY;
     const baseURL =
       process.env.ZHIPUAI_BASE_URL ||
       process.env.OPENAI_BASE_URL ||
-      process.env.LLM_BASE_URL ||
-      'https://open.bigmodel.cn/api/paas/v4';
-    const workflowManager = new VIPWorkflowManager(apiKey, baseURL);
+      process.env.LLM_BASE_URL;
+    if (!apiKey) {
+      logger.warn('[ErrorFeedback] LLM API key 未配置，跳过自动修复');
+      return NextResponse.json({ ok: false, reason: 'LLM_API_KEY_NOT_CONFIGURED' }, { status: 503 });
+    }
+    const workflowManager = new VIPWorkflowManager(apiKey, baseURL || 'https://open.bigmodel.cn/api/paas/v4');
 
     // 执行修复工作流（静默模式：不通知用户）
     const result = await workflowManager.execute(
