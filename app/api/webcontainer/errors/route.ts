@@ -71,11 +71,18 @@ ${errorMessages}
       emitPromise1.catch(err => logger.warn('Failed to emit workflow progress:', err));
     }
 
-    // 初始化VIPWorkflowManager（需要 apiKey 和 baseURL）
-    const workflowManager = new VIPWorkflowManager(
-      'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0',
-      'https://open.bigmodel.cn/api/paas/v4'
-    );
+    // 初始化VIPWorkflowManager（优先环境变量：ZHIPUAI_* / OPENAI_* / LLM_*）
+    const apiKey =
+      process.env.ZHIPUAI_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.LLM_API_KEY ||
+      'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0';
+    const baseURL =
+      process.env.ZHIPUAI_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      process.env.LLM_BASE_URL ||
+      'https://open.bigmodel.cn/api/paas/v4';
+    const workflowManager = new VIPWorkflowManager(apiKey, baseURL);
 
     // 执行修复工作流（静默模式：不通知用户）
     const result = await workflowManager.execute(

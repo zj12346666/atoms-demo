@@ -71,11 +71,18 @@ ${errorReport}
   ]
 }`;
 
-    // 调用 LLM 进行修复
-    const client = new OpenAI({
-      apiKey: 'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0',
-      baseURL: 'https://open.bigmodel.cn/api/paas/v4',
-    });
+    // 调用 LLM 进行修复（优先环境变量：ZHIPUAI_* / OPENAI_* / LLM_*）
+    const apiKey =
+      process.env.ZHIPUAI_API_KEY ||
+      process.env.OPENAI_API_KEY ||
+      process.env.LLM_API_KEY ||
+      'c7e235af6a364f07bdc5affc2c95e77c.tBJn3fOeeETiGBH0';
+    const baseURL =
+      process.env.ZHIPUAI_BASE_URL ||
+      process.env.OPENAI_BASE_URL ||
+      process.env.LLM_BASE_URL ||
+      'https://open.bigmodel.cn/api/paas/v4';
+    const client = new OpenAI({ apiKey, baseURL });
 
     const response = await client.chat.completions.create({
       model: 'glm-4-plus',

@@ -28,12 +28,21 @@ export class CodeGenerator implements ICodeGenerator {
     if (options?.client) {
       this.client = options.client;
     } else {
-      // 否则创建新的客户端
-      const apiKey = options?.apiKey || process.env.OPENAI_API_KEY || '';
-      const baseURL = options?.baseURL || process.env.OPENAI_BASE_URL;
+      // 否则创建新的客户端（支持 OPENAI_API_KEY 或 LLM_API_KEY，任选其一即可）
+      const apiKey =
+        options?.apiKey ||
+        process.env.OPENAI_API_KEY ||
+        process.env.LLM_API_KEY ||
+        '';
+      const baseURL =
+        options?.baseURL ||
+        process.env.OPENAI_BASE_URL ||
+        process.env.LLM_BASE_URL;
 
       if (!apiKey) {
-        throw new Error('OpenAI API key is required. Provide it via options or OPENAI_API_KEY environment variable.');
+        throw new Error(
+          'LLM API key is required. Set OPENAI_API_KEY or LLM_API_KEY in env, or pass options.apiKey.'
+        );
       }
 
       this.client = new OpenAI({

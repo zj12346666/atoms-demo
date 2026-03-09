@@ -894,22 +894,33 @@ export class VIPWorkflowManager {
 
     } catch (error: any) {
       logger.error('❌ VIP Workflow执行失败:', error);
-      
+
+      // 识别 API 余额/配额类错误（含 error.error 结构），给出明确提示
+      const msg = error?.message ?? error?.error?.message ?? '';
+      const code = error?.code ?? error?.error?.code;
+      const isQuotaError =
+        code === '1113' ||
+        error?.status === 429 ||
+        (typeof msg === 'string' && /余额不足|无可用资源包|请充值/i.test(msg));
+      const friendlyMessage = isQuotaError
+        ? 'API 余额不足或资源包已用尽，请到控制台充值或购买资源包后再试。'
+        : msg || '未知错误';
+
       // 清空暂存区
       this.multiFileEngineering.clearStaged();
-      
+
       onProgress({
         state: 'failed',
         message: `❌ 执行失败`,
         progress: 0,
-        details: error.message || '未知错误',
+        details: friendlyMessage,
       });
 
       return {
         success: false,
         plan,
         fileChanges,
-        errors: [error.message],
+        errors: [friendlyMessage],
         validationAttempts: fixAttempts,
       };
     }
